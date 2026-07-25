@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=Cosmic Ext Applet Codexbar
+Comment=CodexBar applet for the COSMIC™ desktop
+Type=Application
+Icon=com.github.leonardo-panseri.cosmic-ext-applet-codexbar
+Exec=cosmic-ext-applet-codexbar %F
+Terminal=false
+StartupNotify=true
+Categories=COSMIC
+Keywords=COSMIC
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto
+MimeType=
