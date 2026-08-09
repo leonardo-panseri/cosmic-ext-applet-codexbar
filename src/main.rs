@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod app;
+#[allow(dead_code)]
+mod codexbar;
 mod config;
 mod i18n;
 
