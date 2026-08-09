@@ -92,6 +92,14 @@ pub enum ResetDisplay {
     Clock,
 }
 
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub enum SessionLabel {
+    #[default]
+    Project,
+    Descriptive,
+    DescriptiveProject,
+}
+
 impl RefreshInterval {
     pub fn fixed_minutes(self) -> Option<u64> {
         match self {
@@ -106,13 +114,14 @@ impl RefreshInterval {
 }
 
 #[derive(Debug, Clone, CosmicConfigEntry, Eq, PartialEq, Serialize, Deserialize)]
-#[version = 6]
+#[version = 7]
 pub struct Config {
     pub icon_style: IconStyle,
     pub refresh_interval: RefreshInterval,
     pub refresh_on_popup_open: bool,
     pub overview_providers: Vec<String>,
     pub terminal_app: String,
+    pub session_label: SessionLabel,
     pub check_provider_status: bool,
     pub language_override: String,
     pub launch_at_login: bool,
@@ -141,6 +150,7 @@ impl Default for Config {
             refresh_on_popup_open: true,
             overview_providers: Vec::new(),
             terminal_app: "cosmic-term".into(),
+            session_label: SessionLabel::default(),
             check_provider_status: true,
             language_override: String::new(),
             launch_at_login: false,

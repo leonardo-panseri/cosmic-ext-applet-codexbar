@@ -6,6 +6,7 @@ mod codexbar;
 mod config;
 mod i18n;
 mod popup;
+mod sessions;
 mod settings;
 mod spend;
 

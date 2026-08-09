@@ -5,6 +5,7 @@ use crate::codexbar::{self, ConfigDump, CostReport, HooksConfig, Provider, Snaps
 use crate::config::{Config, IconStyle, RefreshInterval};
 use crate::fl;
 use crate::popup;
+use crate::sessions;
 use crate::settings::{self, ConfigChange};
 use crate::spend;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
@@ -63,6 +64,9 @@ pub struct AppModel {
     hook_coalescer: Coalescer,
     /// Last-good cost dashboard and its independent refresh state.
     spend: spend::State,
+    /// Last-good agent sessions and popup-only refresh state.
+    sessions: sessions::State,
+    local_host: String,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -100,6 +104,9 @@ pub enum Message {
     RefreshSpend,
     SpendLoaded(u16, Result<Vec<CostReport>, String>),
     SpendDayTick(String),
+    RefreshSessions,
+    SessionsLoaded(Result<Vec<sessions::AgentSession>, String>),
+    OpenSession(String),
     OpenLink(String),
     LinkOpened(Result<(), String>),
     Quit,
@@ -131,6 +138,16 @@ impl AppModel {
             Message::SpendLoaded(
                 days,
                 codexbar::cost(days)
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        })
+    }
+
+    fn sessions_task() -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async {
+            Message::SessionsLoaded(
+                codexbar::sessions()
                     .await
                     .map_err(|error| error.to_string()),
             )
@@ -539,6 +556,7 @@ impl cosmic::Application for AppModel {
                 })
                 .unwrap_or_default(),
             refreshing: true,
+            local_host: sessions::local_host(),
             ..Default::default()
         };
         app.config.normalize();
@@ -660,8 +678,14 @@ impl cosmic::Application for AppModel {
             body
         };
 
-        let content = widget::column::with_capacity(3)
+        let content = widget::column::with_capacity(5)
             .push(body)
+            .push(widget::divider::horizontal::light())
+            .push(sessions::view(
+                &self.sessions,
+                &self.local_host,
+                self.config.session_label,
+            ))
             .push(widget::divider::horizontal::light())
             .push(widget::button::text(fl!("settings")).on_press(Message::OpenSettings));
 
@@ -692,6 +716,12 @@ impl cosmic::Application for AppModel {
             subscriptions.push(
                 cosmic::iced::time::every(Duration::from_secs(60))
                     .map(|_| Message::SpendDayTick(spend::current_day())),
+            );
+        }
+        if sessions::should_poll(self.popup.is_some()) {
+            subscriptions.push(
+                cosmic::iced::time::every(Duration::from_secs(30))
+                    .map(|_| Message::RefreshSessions),
             );
         }
         Subscription::batch(subscriptions)
@@ -799,11 +829,14 @@ impl cosmic::Application for AppModel {
                         .min_height(200.0)
                         .max_height(1080.0);
                     let popup = get_popup(popup_settings);
+                    let mut tasks = vec![popup];
                     if self.config.refresh_on_popup_open && self.begin_refresh() {
-                        Task::batch([popup, Self::refresh_task(self.config.check_provider_status)])
-                    } else {
-                        popup
+                        tasks.push(Self::refresh_task(self.config.check_provider_status));
                     }
+                    if self.sessions.request_refresh() {
+                        tasks.push(Self::sessions_task());
+                    }
+                    Task::batch(tasks)
                 };
             }
             Message::PopupClosed(id) => {
@@ -956,6 +989,30 @@ impl cosmic::Application for AppModel {
             Message::SpendDayTick(day) => {
                 if self.spend.refresh_for_day(&day) {
                     return Self::spend_task(self.spend.days);
+                }
+            }
+            Message::RefreshSessions => {
+                if self.popup.is_some() && self.sessions.request_refresh() {
+                    return Self::sessions_task();
+                }
+            }
+            Message::SessionsLoaded(result) => self.sessions.finish(result),
+            Message::OpenSession(id) => {
+                let result = self
+                    .sessions
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == id)
+                    .ok_or_else(|| "session is no longer available".to_owned())
+                    .and_then(|session| {
+                        sessions::launch_terminal(
+                            &self.config.terminal_app,
+                            session,
+                            &self.local_host,
+                        )
+                    });
+                if let Err(error) = result {
+                    self.sessions.error = Some(error);
                 }
             }
             Message::OpenLink(url) => return Self::open_link_task(url),

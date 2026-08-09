@@ -3,7 +3,8 @@
 use crate::app::Message;
 use crate::codexbar::{ConfigDump, HooksConfig, Provider, Snapshot};
 use crate::config::{
-    Config, IconStyle, PresentationLayout, RefreshInterval, ResetDisplay, UsageBarFill,
+    Config, IconStyle, PresentationLayout, RefreshInterval, ResetDisplay, SessionLabel,
+    UsageBarFill,
 };
 use crate::{fl, popup, spend};
 use cosmic::iced::Length;
@@ -101,6 +102,7 @@ impl State {
 pub enum ConfigChange {
     RefreshInterval(usize),
     TerminalApp(String),
+    SessionLabel(usize),
     RefreshOnOpen(bool),
     CheckStatus(bool),
     Language(String),
@@ -146,6 +148,13 @@ impl ConfigChange {
                 ][index.min(5)]
             }
             Self::TerminalApp(value) => config.terminal_app = value,
+            Self::SessionLabel(index) => {
+                config.session_label = [
+                    SessionLabel::Project,
+                    SessionLabel::Descriptive,
+                    SessionLabel::DescriptiveProject,
+                ][index.min(2)]
+            }
             Self::RefreshOnOpen(value) => config.refresh_on_popup_open = value,
             Self::CheckStatus(value) => config.check_provider_status = value,
             Self::Language(value) => config.language_override = value,
@@ -317,6 +326,22 @@ fn general(config: &Config) -> Element<'_, Message> {
                 fl!("settings-terminal-app"),
                 widget::text_input(fl!("settings-terminal-placeholder"), &config.terminal_app)
                     .on_input(|value| Message::SettingsConfig(ConfigChange::TerminalApp(value))),
+            ))
+            .add(settings::item(
+                fl!("settings-session-label"),
+                widget::dropdown(
+                    vec![
+                        fl!("session-label-project"),
+                        fl!("session-label-descriptive"),
+                        fl!("session-label-descriptive-project"),
+                    ],
+                    Some(match config.session_label {
+                        SessionLabel::Project => 0,
+                        SessionLabel::Descriptive => 1,
+                        SessionLabel::DescriptiveProject => 2,
+                    }),
+                    |index| Message::SettingsConfig(ConfigChange::SessionLabel(index)),
+                ),
             ))
             .add(settings::item(
                 fl!("settings-language-override"),
@@ -855,6 +880,7 @@ mod tests {
             ConfigChange::SwitcherRows(1),
             ConfigChange::UsageBarFill(1),
             ConfigChange::ResetDisplay(1),
+            ConfigChange::SessionLabel(2),
             ConfigChange::ShowCredits(false),
             ConfigChange::NotificationsEnabled(false),
             ConfigChange::NotificationSound(false),
@@ -869,6 +895,7 @@ mod tests {
         assert_eq!(config.switcher_rows, 2);
         assert_eq!(config.usage_bar_fill, UsageBarFill::Segmented);
         assert_eq!(config.reset_display, ResetDisplay::Clock);
+        assert_eq!(config.session_label, SessionLabel::DescriptiveProject);
         assert!(!config.show_credits);
         assert!(!config.notifications_enabled);
         assert!(!config.notification_sound);

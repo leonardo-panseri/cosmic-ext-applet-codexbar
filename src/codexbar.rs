@@ -8,6 +8,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::{process::Command, time::timeout};
 
+use crate::sessions::AgentSession;
+
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub type Timestamp = String;
@@ -214,6 +216,10 @@ pub async fn cost(days: u16) -> Result<Vec<CostReport>, Error> {
         "--json".to_owned(),
     ])
     .await
+}
+
+pub async fn sessions() -> Result<Vec<AgentSession>, Error> {
+    run_json(&["sessions", "--json"]).await
 }
 
 fn usage_args(check_status: bool) -> Vec<&'static str> {
