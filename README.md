@@ -18,6 +18,10 @@ A [justfile](./justfile) is included by default for the [casey/just][just] comma
 
 [Fluent][fluent] is used for localization of the software. Fluent's translation files are found in the [i18n directory](./i18n). New translations may copy the [English (en) localization](./i18n/en) of the project, rename `en` to the desired [ISO 639-1 language code][iso-codes], and then translations can be provided for each [message identifier][fluent-guide]. If no translation is necessary, the message may be omitted.
 
+## Live backend test
+
+Run `CODEXBAR_LIVE_TEST=1 cargo test live_usage_snapshot_secondary_percent_round_trips -- --nocapture` to validate the installed CodexBar CLI with live credentials. The test skips safely when the CLI, credentials, network, or a secondary usage window is unavailable.
+
 ## Packaging
 
 If packaging for a Linux distribution, vendor dependencies locally with the `vendor` rule, and build with the vendored sources using the `build-vendored` rule. When installing files, use the `rootdir` and `prefix` variables to change installation paths.

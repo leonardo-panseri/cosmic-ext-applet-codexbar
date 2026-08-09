@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::alerts::{self, Coalescer};
-use crate::codexbar::{self, ConfigDump, CostReport, HooksConfig, Provider, Snapshot, Window};
+use crate::codexbar::{
+    self, ApiKeyOptions, ConfigDump, CostReport, HooksConfig, Provider, Snapshot, Window,
+};
 use crate::config::{Config, IconStyle, RefreshInterval};
 use crate::fl;
 use crate::popup;
@@ -67,6 +69,7 @@ pub struct AppModel {
     /// Last-good agent sessions and popup-only refresh state.
     sessions: sessions::State,
     local_host: String,
+    error_expanded: bool,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -80,6 +83,7 @@ pub enum Message {
     SelectTab(segmented_button::Entity),
     UpdateConfig(Config),
     CopyError,
+    ToggleError,
     CopyText(String),
     CopyShortcutCommand,
     OpenShortcutSettings,
@@ -103,6 +107,13 @@ pub enum Message {
     AlertsDelivered(Vec<String>),
     SignIn(String),
     SignInFinished(Result<(), String>),
+    ProviderApiKey(String),
+    ProviderCredentialLabel(String),
+    ProviderOrganizationId(String),
+    ProviderWorkspaceId(String),
+    ProviderTeamUsage(bool),
+    SaveProviderApiKey(String),
+    ProviderApiKeySaved(Result<(), String>),
     SettingsConfig(ConfigChange),
     SelectSpendRange(segmented_button::Entity),
     RefreshSpend,
@@ -229,6 +240,20 @@ impl AppModel {
         })
     }
 
+    fn set_api_key_task(
+        provider: String,
+        api_key: String,
+        options: ApiKeyOptions,
+    ) -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async move {
+            Message::ProviderApiKeySaved(
+                codexbar::set_api_key(&provider, &api_key, &options)
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        })
+    }
+
     fn open_link_task(url: String) -> Task<cosmic::Action<Message>> {
         cosmic::task::future(async move { Message::LinkOpened(settings::open_link(url).await) })
     }
@@ -251,6 +276,7 @@ impl AppModel {
         &mut self,
         result: Result<Vec<Snapshot>, String>,
     ) -> Vec<alerts::Event> {
+        let previous_error = self.error_detail();
         self.refreshing = false;
         let current = match result {
             Ok(mut snapshots) => {
@@ -300,6 +326,9 @@ impl AppModel {
             &self.config.quota_thresholds,
         );
         self.alert_state = Some(current);
+        if self.error_detail() != previous_error {
+            self.error_expanded = false;
+        }
         events
     }
 
@@ -411,14 +440,40 @@ fn indicator_icon(has_error: bool, size: u16) -> Element<'static, Message> {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum UsageWindow {
+    Session,
+    Weekly,
+    Monthly,
+}
+
+impl UsageWindow {
+    pub fn label(self) -> String {
+        match self {
+            Self::Session => fl!("usage-session"),
+            Self::Weekly => fl!("usage-weekly"),
+            Self::Monthly => fl!("usage-monthly"),
+        }
+    }
+}
+
 pub(crate) fn available_windows(
     snapshot: &Snapshot,
-) -> impl Iterator<Item = (&'static str, &Window)> {
+) -> impl Iterator<Item = (UsageWindow, &Window)> {
     let usage = snapshot.usage.as_ref();
     [
-        ("Session", usage.and_then(|usage| usage.primary.as_ref())),
-        ("Weekly", usage.and_then(|usage| usage.secondary.as_ref())),
-        ("Monthly", usage.and_then(|usage| usage.tertiary.as_ref())),
+        (
+            UsageWindow::Session,
+            usage.and_then(|usage| usage.primary.as_ref()),
+        ),
+        (
+            UsageWindow::Weekly,
+            usage.and_then(|usage| usage.secondary.as_ref()),
+        ),
+        (
+            UsageWindow::Monthly,
+            usage.and_then(|usage| usage.tertiary.as_ref()),
+        ),
     ]
     .into_iter()
     .filter_map(|(label, window)| window.map(|window| (label, window)))
@@ -519,7 +574,7 @@ fn refresh_period(interval: RefreshInterval, snapshots: &[Snapshot], now: Timest
         .filter(|seconds| *seconds > 0)
         .min()
         .unwrap_or(300)
-        .max(60);
+        .clamp(60, 30 * 60);
     Duration::from_secs(seconds as u64)
 }
 
@@ -567,6 +622,9 @@ impl cosmic::Application for AppModel {
             ..Default::default()
         };
         app.config.normalize();
+        crate::i18n::select_override(&app.config.language_override);
+        app.settings.rebuild_nav(app.config.show_debug_settings);
+        app.spend.rebuild_ranges();
         app.spend.set_days(app.config.cost_summary_days);
         app.refresh_period = refresh_period(
             app.config.refresh_interval,
@@ -653,6 +711,8 @@ impl cosmic::Application for AppModel {
                 self.refreshing,
                 self.error_detail(),
                 &self.config,
+                Some(&self.spend),
+                self.error_expanded,
             )
         } else if let Some(error) = self.error_detail() {
             widget::container(
@@ -721,7 +781,8 @@ impl cosmic::Application for AppModel {
                 }),
             cosmic::iced::time::every(self.refresh_period).map(|_| Message::RefreshRequested),
         ];
-        if self.settings_window.is_some() {
+        if self.settings_window.is_some() || (self.popup.is_some() && self.config.show_cost_summary)
+        {
             subscriptions.push(
                 cosmic::iced::time::every(Duration::from_secs(60))
                     .map(|_| Message::SpendDayTick(spend::current_day())),
@@ -788,12 +849,20 @@ impl cosmic::Application for AppModel {
                     return Task::none();
                 };
                 self.selection = selection;
+                self.error_expanded = false;
                 self.provider_tabs.activate(id);
             }
             Message::UpdateConfig(mut config) => {
+                let old_language = self.config.language_override.clone();
                 let old_cost_days = self.config.cost_summary_days;
+                let old_show_cost = self.config.show_cost_summary;
                 config.normalize();
                 self.config = config;
+                if old_language != self.config.language_override {
+                    crate::i18n::select_override(&self.config.language_override);
+                    self.spend.rebuild_ranges();
+                }
+                self.settings.rebuild_nav(self.config.show_debug_settings);
                 if self.config.overview_providers.is_empty()
                     && self.selection == Selection::Overview
                 {
@@ -807,11 +876,14 @@ impl cosmic::Application for AppModel {
                 );
                 if old_cost_days != self.config.cost_summary_days {
                     self.spend.set_days(self.config.cost_summary_days);
-                    if self.settings_window.is_some()
-                        && self.spend.request_refresh(&spend::current_day())
-                    {
-                        return Self::spend_task(self.spend.days);
-                    }
+                }
+                if (old_cost_days != self.config.cost_summary_days
+                    || (!old_show_cost && self.config.show_cost_summary))
+                    && (self.settings_window.is_some()
+                        || (self.popup.is_some() && self.config.show_cost_summary))
+                    && self.spend.request_refresh(&spend::current_day())
+                {
+                    return Self::spend_task(self.spend.days);
                 }
             }
             Message::CopyError => {
@@ -819,6 +891,7 @@ impl cosmic::Application for AppModel {
                     return clipboard::write(error);
                 }
             }
+            Message::ToggleError => self.error_expanded = !self.error_expanded,
             Message::CopyText(value) => return clipboard::write(value),
             Message::CopyShortcutCommand => {
                 return clipboard::write(settings::shortcut_command());
@@ -828,6 +901,7 @@ impl cosmic::Application for AppModel {
             Message::ShortcutSettingsOpened(Err(error)) => self.settings.error = Some(error),
             Message::TogglePopup => {
                 return if let Some(p) = self.popup.take() {
+                    self.error_expanded = false;
                     destroy_popup(p)
                 } else {
                     let new_id = Id::unique();
@@ -852,12 +926,18 @@ impl cosmic::Application for AppModel {
                     if self.sessions.request_refresh() {
                         tasks.push(Self::sessions_task());
                     }
+                    if self.config.show_cost_summary
+                        && self.spend.request_refresh(&spend::current_day())
+                    {
+                        tasks.push(Self::spend_task(self.config.cost_summary_days));
+                    }
                     Task::batch(tasks)
                 };
             }
             Message::PopupClosed(id) => {
                 if self.popup.as_ref() == Some(&id) {
                     self.popup = None;
+                    self.error_expanded = false;
                 }
             }
             Message::OpenSettings => {
@@ -906,6 +986,9 @@ impl cosmic::Application for AppModel {
             Message::SelectProvider(provider) => {
                 self.settings.selected_provider = Some(provider);
                 self.settings.error = None;
+                self.settings.api_key.clear();
+                self.settings.api_key_options = ApiKeyOptions::default();
+                self.error_expanded = false;
             }
             Message::SetProviderEnabled(provider, enabled) => {
                 self.settings.error = None;
@@ -949,8 +1032,36 @@ impl cosmic::Application for AppModel {
             }
             Message::SignInFinished(Ok(())) => {}
             Message::SignInFinished(Err(error)) => self.settings.error = Some(error),
+            Message::ProviderApiKey(value) => self.settings.api_key = value,
+            Message::ProviderCredentialLabel(value) => self.settings.api_key_options.label = value,
+            Message::ProviderOrganizationId(value) => {
+                self.settings.api_key_options.organization_id = value
+            }
+            Message::ProviderWorkspaceId(value) => {
+                self.settings.api_key_options.workspace_id = value
+            }
+            Message::ProviderTeamUsage(value) => self.settings.api_key_options.team_usage = value,
+            Message::SaveProviderApiKey(provider) => {
+                self.settings.error = None;
+                return Self::set_api_key_task(
+                    provider,
+                    self.settings.api_key.clone(),
+                    self.settings.api_key_options.clone(),
+                );
+            }
+            Message::ProviderApiKeySaved(Ok(())) => {
+                self.settings.api_key.clear();
+                let mut tasks = vec![Self::config_dump_task(), Self::providers_task()];
+                if self.begin_refresh() {
+                    tasks.push(Self::refresh_task(self.config.check_provider_status));
+                }
+                return Task::batch(tasks);
+            }
+            Message::ProviderApiKeySaved(Err(error)) => self.settings.error = Some(error),
             Message::SettingsConfig(change) => {
+                let old_language = self.config.language_override.clone();
                 let old_cost_days = self.config.cost_summary_days;
+                let old_show_cost = self.config.show_cost_summary;
                 let launch_at_login = change.launch_at_login();
                 if let Some(enabled) = launch_at_login
                     && let Err(error) = settings::sync_autostart(enabled)
@@ -959,6 +1070,11 @@ impl cosmic::Application for AppModel {
                     return Task::none();
                 }
                 change.apply(&mut self.config);
+                if old_language != self.config.language_override {
+                    crate::i18n::select_override(&self.config.language_override);
+                    self.spend.rebuild_ranges();
+                }
+                self.settings.rebuild_nav(self.config.show_debug_settings);
                 match cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
                     .and_then(|context| self.config.write_entry(&context))
                 {
@@ -975,11 +1091,14 @@ impl cosmic::Application for AppModel {
                 );
                 if old_cost_days != self.config.cost_summary_days {
                     self.spend.set_days(self.config.cost_summary_days);
-                    if self.settings_window.is_some()
-                        && self.spend.request_refresh(&spend::current_day())
-                    {
-                        return Self::spend_task(self.spend.days);
-                    }
+                }
+                if (old_cost_days != self.config.cost_summary_days
+                    || (!old_show_cost && self.config.show_cost_summary))
+                    && (self.settings_window.is_some()
+                        || (self.popup.is_some() && self.config.show_cost_summary))
+                    && self.spend.request_refresh(&spend::current_day())
+                {
+                    return Self::spend_task(self.spend.days);
                 }
             }
             Message::SelectSpendRange(id) => {
@@ -1194,7 +1313,7 @@ mod tests {
 
         let windows = available_windows(&snapshot).collect::<Vec<_>>();
         assert_eq!(windows.len(), 1);
-        assert_eq!(windows[0].0, "Weekly");
+        assert_eq!(windows[0].0, UsageWindow::Weekly);
     }
 
     #[test]
@@ -1225,6 +1344,35 @@ mod tests {
     }
 
     #[test]
+    fn error_detail_expands_and_collapses() {
+        let mut app = AppModel::default();
+
+        drop(cosmic::Application::update(&mut app, Message::ToggleError));
+        assert!(app.error_expanded);
+        drop(cosmic::Application::update(&mut app, Message::ToggleError));
+        assert!(!app.error_expanded);
+    }
+
+    #[test]
+    fn a_different_error_and_provider_selection_start_collapsed() {
+        let mut app = AppModel {
+            refresh_error: Some("old failure".into()),
+            error_expanded: true,
+            ..Default::default()
+        };
+
+        _ = app.apply_snapshot_result(Err("new failure".into()));
+        assert!(!app.error_expanded);
+
+        app.error_expanded = true;
+        drop(cosmic::Application::update(
+            &mut app,
+            Message::SelectProvider("claude".into()),
+        ));
+        assert!(!app.error_expanded);
+    }
+
+    #[test]
     fn adaptive_refresh_has_a_one_minute_floor() {
         let snapshot = Snapshot {
             usage: Some(Usage {
@@ -1248,7 +1396,7 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_refresh_uses_the_nearest_reset() {
+    fn adaptive_refresh_is_capped_at_thirty_minutes() {
         let snapshot = Snapshot {
             usage: Some(Usage {
                 primary: Some(Window {
@@ -1266,7 +1414,7 @@ mod tests {
                 &[snapshot],
                 "2026-08-09T10:00:00Z".parse::<Timestamp>().unwrap()
             ),
-            std::time::Duration::from_secs(2 * 60 * 60)
+            std::time::Duration::from_secs(30 * 60)
         );
     }
 

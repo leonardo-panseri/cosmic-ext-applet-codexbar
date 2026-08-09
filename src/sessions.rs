@@ -37,29 +37,30 @@ impl AgentSession {
     pub fn label(&self, mode: SessionLabel) -> String {
         let project = self.project();
         let descriptive = if self.session_name.trim().is_empty() {
-            project
+            project.clone()
         } else {
-            self.session_name.trim()
+            self.session_name.trim().to_owned()
         };
         match mode {
-            SessionLabel::Project => project.to_owned(),
-            SessionLabel::Descriptive => descriptive.to_owned(),
+            SessionLabel::Project => project.clone(),
+            SessionLabel::Descriptive => descriptive.clone(),
             SessionLabel::DescriptiveProject if descriptive != project => {
                 format!("{descriptive} · {project}")
             }
-            SessionLabel::DescriptiveProject => project.to_owned(),
+            SessionLabel::DescriptiveProject => project,
         }
     }
 
-    fn project(&self) -> &str {
+    fn project(&self) -> String {
         if !self.project_name.trim().is_empty() {
-            return self.project_name.trim();
+            return self.project_name.trim().to_owned();
         }
         Path::new(&self.cwd)
             .file_name()
             .and_then(|name| name.to_str())
             .filter(|name| !name.is_empty())
-            .unwrap_or("Unknown project")
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| fl!("sessions-unknown-project"))
     }
 }
 

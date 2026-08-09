@@ -3,10 +3,11 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
+use std::process::Stdio;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use tokio::{process::Command, time::timeout};
+use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
 
 use crate::sessions::AgentSession;
 
@@ -37,6 +38,14 @@ pub struct ProviderConfig {
     pub id: String,
     #[serde(flatten)]
     pub fields: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Default, Clone, Eq, PartialEq)]
+pub struct ApiKeyOptions {
+    pub label: String,
+    pub organization_id: String,
+    pub workspace_id: String,
+    pub team_usage: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -289,6 +298,63 @@ pub async fn set_provider_enabled(provider: &str, enabled: bool) -> Result<(), E
     run_json::<serde_json::Value, _>(&args).await.map(drop)
 }
 
+fn set_api_key_args(provider: &str, options: &ApiKeyOptions) -> Vec<String> {
+    let mut args = vec![
+        "config".into(),
+        "set-api-key".into(),
+        "--provider".into(),
+        provider.into(),
+        "--stdin".into(),
+        "--json".into(),
+    ];
+    for (flag, value) in [
+        ("--label", &options.label),
+        ("--organization-id", &options.organization_id),
+        ("--workspace-id", &options.workspace_id),
+    ] {
+        if !value.trim().is_empty() {
+            args.extend([flag.into(), value.trim().into()]);
+        }
+    }
+    if options.team_usage {
+        args.extend(["--usage-scope".into(), "team".into()]);
+    }
+    args
+}
+
+pub async fn set_api_key(
+    provider: &str,
+    api_key: &str,
+    options: &ApiKeyOptions,
+) -> Result<(), Error> {
+    if provider.trim().is_empty() || api_key.is_empty() {
+        return Err(Error("provider and API key are required".into()));
+    }
+    let args = set_api_key_args(provider, options);
+    let mut command = Command::new("codexbar");
+    command
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|error| Error(format!("failed to run codexbar: {error}")))?;
+    child
+        .stdin
+        .take()
+        .expect("piped codexbar stdin")
+        .write_all(api_key.as_bytes())
+        .await
+        .map_err(|error| Error(format!("failed to write API key to codexbar: {error}")))?;
+    let output = timeout(COMMAND_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| Error("codexbar timed out after 30 seconds".into()))?
+        .map_err(|error| Error(format!("failed to run codexbar: {error}")))?;
+    checked_output(output).map(drop)
+}
+
 pub fn sign_in_command(provider: &str) -> Option<(&'static str, &'static [&'static str])> {
     match provider {
         "codex" => Some(("codex", &["login"])),
@@ -332,17 +398,20 @@ where
         Err(_) => return Err(Error("codexbar timed out after 30 seconds".into())),
     };
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        let detail = if stderr.is_empty() {
-            output.status.to_string()
-        } else {
-            stderr
-        };
-        return Err(Error(format!("codexbar failed: {detail}")));
-    }
+    checked_output(output)
+}
 
-    Ok(output.stdout)
+fn checked_output(output: std::process::Output) -> Result<Vec<u8>, Error> {
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let detail = if stderr.is_empty() {
+        output.status.to_string()
+    } else {
+        stderr
+    };
+    Err(Error(format!("codexbar failed: {detail}")))
 }
 
 #[cfg(test)]
@@ -380,6 +449,38 @@ mod tests {
             disable.each_ref().map(String::as_str),
             ["config", "disable", "--provider", "claude", "--json"]
         );
+    }
+
+    #[test]
+    fn api_key_uses_stdin_and_keeps_the_secret_out_of_argv() {
+        let options = ApiKeyOptions {
+            label: " Team ".into(),
+            organization_id: "org_123".into(),
+            workspace_id: "proj_456".into(),
+            team_usage: true,
+        };
+        let args = set_api_key_args("zai", &options);
+
+        assert_eq!(
+            args,
+            [
+                "config",
+                "set-api-key",
+                "--provider",
+                "zai",
+                "--stdin",
+                "--json",
+                "--label",
+                "Team",
+                "--organization-id",
+                "org_123",
+                "--workspace-id",
+                "proj_456",
+                "--usage-scope",
+                "team",
+            ]
+        );
+        assert!(!args.iter().any(|argument| argument == "secret-value"));
     }
 
     #[test]
@@ -479,5 +580,35 @@ mod tests {
         let storage = snapshot.storage.unwrap();
         assert_eq!(storage.total_bytes, 1_536);
         assert_eq!(storage.components[0].path, "/home/dev/.codex");
+    }
+
+    #[tokio::test]
+    async fn live_usage_snapshot_secondary_percent_round_trips() {
+        if std::env::var_os("CODEXBAR_LIVE_TEST").is_none() {
+            return;
+        }
+        let Ok(snapshots) = usage_snapshot(false).await else {
+            eprintln!("live CodexBar validation skipped: CLI, credentials, or network unavailable");
+            return;
+        };
+        let Some(snapshot) = snapshots.iter().find(|snapshot| {
+            snapshot
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.secondary.as_ref())
+                .is_some()
+        }) else {
+            eprintln!("live CodexBar validation skipped: no secondary usage window available");
+            return;
+        };
+        let used_percent = snapshot
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.secondary.as_ref())
+            .unwrap()
+            .used_percent;
+        let json = serde_json::to_value(snapshot).unwrap();
+
+        assert_eq!(json["usage"]["secondary"]["usedPercent"], used_percent);
     }
 }

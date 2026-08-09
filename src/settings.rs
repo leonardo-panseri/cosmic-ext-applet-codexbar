@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::app::Message;
-use crate::codexbar::{ConfigDump, HooksConfig, Provider, Snapshot};
+use crate::codexbar::{ApiKeyOptions, ConfigDump, HooksConfig, Provider, Snapshot};
 use crate::config::{
     Config, IconStyle, PresentationLayout, RefreshInterval, ResetDisplay, SessionLabel,
     UsageBarFill,
@@ -43,6 +43,7 @@ pub enum Pane {
     Menu,
     Notifications,
     Advanced,
+    Debug,
     Hooks,
     About,
     Providers,
@@ -56,34 +57,25 @@ pub struct State {
     pub error: Option<String>,
     pub hooks: HooksConfig,
     pub notification_provider: Option<String>,
+    pub api_key: String,
+    pub api_key_options: ApiKeyOptions,
 }
 
 impl Default for State {
     fn default() -> Self {
-        let mut nav = nav_bar::Model::default();
-        for (title, pane) in [
-            (fl!("settings-general"), Pane::General),
-            (fl!("settings-usage-spend"), Pane::UsageSpend),
-            (fl!("settings-menu-bar"), Pane::MenuBar),
-            (fl!("settings-menu"), Pane::Menu),
-            (fl!("settings-notifications"), Pane::Notifications),
-            (fl!("settings-advanced"), Pane::Advanced),
-            (fl!("settings-hooks"), Pane::Hooks),
-            (fl!("settings-about"), Pane::About),
-            (fl!("settings-providers"), Pane::Providers),
-        ] {
-            nav.insert().text(title).data(pane);
-        }
-        nav.activate_position(0);
-        Self {
-            nav,
+        let mut state = Self {
+            nav: nav_bar::Model::default(),
             search: String::new(),
             selected_provider: None,
             dump: ConfigDump::default(),
             error: None,
             hooks: HooksConfig::default(),
             notification_provider: None,
-        }
+            api_key: String::new(),
+            api_key_options: ApiKeyOptions::default(),
+        };
+        state.rebuild_nav(false);
+        state
     }
 }
 
@@ -97,6 +89,49 @@ impl State {
 
     pub fn select_pane(&mut self, id: nav_bar::Id) {
         self.nav.activate(id);
+    }
+
+    pub fn rebuild_nav(&mut self, show_debug: bool) {
+        let active = self.pane();
+        self.nav = nav_bar::Model::default();
+        for (position, pane) in pane_order(show_debug).into_iter().enumerate() {
+            let title = pane_title(pane);
+            self.nav.insert().text(title).data(pane);
+            if pane == active {
+                self.nav.activate_position(position as u16);
+            }
+        }
+    }
+}
+
+fn pane_order(show_debug: bool) -> Vec<Pane> {
+    let mut panes = vec![
+        Pane::General,
+        Pane::UsageSpend,
+        Pane::MenuBar,
+        Pane::Menu,
+        Pane::Notifications,
+        Pane::Advanced,
+    ];
+    if show_debug {
+        panes.push(Pane::Debug);
+    }
+    panes.extend([Pane::Hooks, Pane::About, Pane::Providers]);
+    panes
+}
+
+fn pane_title(pane: Pane) -> String {
+    match pane {
+        Pane::General => fl!("settings-general"),
+        Pane::UsageSpend => fl!("settings-usage-spend"),
+        Pane::MenuBar => fl!("settings-menu-bar"),
+        Pane::Menu => fl!("settings-menu"),
+        Pane::Notifications => fl!("settings-notifications"),
+        Pane::Advanced => fl!("settings-advanced"),
+        Pane::Debug => fl!("settings-debug"),
+        Pane::Hooks => fl!("settings-hooks"),
+        Pane::About => fl!("settings-about"),
+        Pane::Providers => fl!("settings-providers"),
     }
 }
 
@@ -307,6 +342,7 @@ pub fn view<'a>(
         Pane::Menu => menu(config),
         Pane::Notifications => notifications(state, config, providers),
         Pane::Advanced => advanced(config),
+        Pane::Debug => debug(providers, snapshots, refreshing, usage_error),
         Pane::Hooks => hooks(state, providers),
         Pane::About => about(),
         Pane::Providers => {
@@ -562,6 +598,45 @@ fn advanced(config: &Config) -> Element<'_, Message> {
                 fl!("settings-show-debug"),
                 toggler(config.show_debug_settings)
                     .on_toggle(|value| Message::SettingsConfig(ConfigChange::ShowDebug(value))),
+            ))
+            .into(),
+    ])
+    .into()
+}
+
+fn debug<'a>(
+    providers: &'a [Provider],
+    snapshots: &'a [Snapshot],
+    refreshing: bool,
+    usage_error: Option<String>,
+) -> Element<'a, Message> {
+    let last_error = usage_error.unwrap_or_else(|| fl!("debug-none"));
+    settings::view_column(vec![
+        widget::text::title3(fl!("settings-debug")).into(),
+        settings::section()
+            .add(settings::item(
+                fl!("debug-build"),
+                widget::text(build_metadata()),
+            ))
+            .add(settings::item(
+                fl!("debug-providers"),
+                widget::text(providers.len().to_string()),
+            ))
+            .add(settings::item(
+                fl!("debug-snapshots"),
+                widget::text(snapshots.len().to_string()),
+            ))
+            .add(settings::item(
+                fl!("debug-refresh-state"),
+                widget::text(if refreshing {
+                    fl!("refreshing-usage")
+                } else {
+                    fl!("debug-idle")
+                }),
+            ))
+            .add(settings::item(
+                fl!("debug-last-error"),
+                widget::text(last_error),
             ))
             .into(),
     ])
@@ -851,6 +926,53 @@ fn provider_detail<'a>(
                 .on_press(Message::SignIn(provider_id.to_owned())),
         );
     }
+    content = content.push(
+        settings::section()
+            .title(fl!("settings-api-credential"))
+            .add(settings::item(
+                fl!("settings-api-key"),
+                widget::text_input::secure_input(
+                    fl!("settings-api-key-placeholder"),
+                    &state.api_key,
+                    None,
+                    true,
+                )
+                .on_input(Message::ProviderApiKey),
+            ))
+            .add(settings::item(
+                fl!("settings-credential-label"),
+                widget::text_input(fl!("settings-optional"), &state.api_key_options.label)
+                    .on_input(Message::ProviderCredentialLabel),
+            ))
+            .add(settings::item(
+                fl!("settings-organization-id"),
+                widget::text_input(
+                    fl!("settings-optional"),
+                    &state.api_key_options.organization_id,
+                )
+                .on_input(Message::ProviderOrganizationId),
+            ))
+            .add(settings::item(
+                fl!("settings-workspace-id"),
+                widget::text_input(
+                    fl!("settings-optional"),
+                    &state.api_key_options.workspace_id,
+                )
+                .on_input(Message::ProviderWorkspaceId),
+            ))
+            .add(settings::item(
+                fl!("settings-team-usage"),
+                toggler(state.api_key_options.team_usage).on_toggle(Message::ProviderTeamUsage),
+            ))
+            .add(settings::item_row(vec![
+                widget::button::suggested(fl!("settings-save-api-key"))
+                    .on_press_maybe(
+                        (!state.api_key.is_empty())
+                            .then(|| Message::SaveProviderApiKey(provider_id.to_owned())),
+                    )
+                    .into(),
+            ])),
+    );
     if let Some(provider) = state
         .dump
         .providers
@@ -858,7 +980,11 @@ fn provider_detail<'a>(
         .find(|provider| provider.id == provider_id)
     {
         let mut fields = settings::section().title(fl!("settings-configuration"));
-        for (name, value) in &provider.fields {
+        for (name, value) in provider
+            .fields
+            .iter()
+            .filter(|(name, _)| !is_secret_field(name))
+        {
             fields = fields.add(settings::item(name, widget::text(display_value(value))));
         }
         content = content.push(fields);
@@ -876,6 +1002,8 @@ fn provider_detail<'a>(
                 refreshing,
                 usage_error,
                 config,
+                None,
+                false,
             ));
     }
     content.into()
@@ -886,6 +1014,13 @@ fn display_value(value: &serde_json::Value) -> String {
         .as_str()
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| value.to_string())
+}
+
+fn is_secret_field(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    ["key", "secret", "token", "password", "cookie"]
+        .iter()
+        .any(|part| name.contains(part))
 }
 
 fn provider_name(provider: &Provider) -> &str {
@@ -1023,5 +1158,20 @@ mod tests {
         assert!(!config.notification_sound);
         assert_eq!(config.quota_thresholds.defaults.primary, 90);
         assert_eq!(config.quota_thresholds.for_provider("codex").secondary, 95);
+    }
+
+    #[test]
+    fn debug_pane_is_only_in_navigation_when_enabled() {
+        assert!(!pane_order(false).contains(&Pane::Debug));
+        assert!(pane_order(true).contains(&Pane::Debug));
+    }
+
+    #[test]
+    fn provider_dump_never_displays_secret_fields() {
+        for field in ["apiKey", "tokenAccounts", "password", "cookieHeader"] {
+            assert!(is_secret_field(field));
+        }
+        assert!(!is_secret_field("region"));
+        assert!(!is_secret_field("workspaceID"));
     }
 }

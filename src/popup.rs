@@ -1,19 +1,23 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::app::{Message, available_windows, snapshot_percent};
+use crate::app::{Message, UsageWindow, available_windows, snapshot_percent};
 use crate::codexbar::{Identity, Provider, ProviderStorage, Snapshot, Window};
 use crate::config::{Config, PresentationLayout, ResetDisplay, UsageBarFill};
 use crate::fl;
 use crate::privacy;
+use crate::spend;
 use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
 use cosmic::widget;
+use jiff::{Timestamp, tz::TimeZone};
 
 pub fn provider_card<'a>(
     snapshot: &'a Snapshot,
     refreshing: bool,
     error: Option<String>,
     config: &'a Config,
+    spend_state: Option<&'a spend::State>,
+    error_expanded: bool,
 ) -> Element<'a, Message> {
     let (padding, spacing) = match config.presentation_layout {
         PresentationLayout::Compact => (8, 8),
@@ -68,13 +72,13 @@ pub fn provider_card<'a>(
     }
 
     let thresholds = config.quota_thresholds.for_provider(&snapshot.provider);
-    for (label, window) in available_windows(snapshot) {
-        let threshold = match label {
-            "Session" => thresholds.primary,
-            "Weekly" => thresholds.secondary,
-            _ => thresholds.tertiary,
+    for (kind, window) in available_windows(snapshot) {
+        let threshold = match kind {
+            UsageWindow::Session => thresholds.primary,
+            UsageWindow::Weekly => thresholds.secondary,
+            UsageWindow::Monthly => thresholds.tertiary,
         };
-        content = content.push(window_row(label, window, config, threshold));
+        content = content.push(window_row(kind.label(), window, config, threshold));
     }
 
     if let Some(summary) = snapshot.pace.as_ref().and_then(|pace| {
@@ -84,14 +88,18 @@ pub fn provider_card<'a>(
             .map(|pace| pace.summary.as_str())
             .find(|summary| !summary.is_empty())
     }) {
-        content = content.push(widget::text::body(format!("Pace · {summary}")));
+        content = content.push(widget::text::body(format!(
+            "{} · {summary}",
+            fl!("provider-pace")
+        )));
     }
 
     if config.show_credits
         && let Some(credits) = &snapshot.credits
     {
         content = content.push(widget::text::body(format!(
-            "Credits · {:.2}",
+            "{} · {:.2}",
+            fl!("provider-credits"),
             credits.remaining
         )));
     }
@@ -135,22 +143,54 @@ pub fn provider_card<'a>(
         );
     }
 
+    if let Some(url) = dashboard_url(&snapshot.provider) {
+        content = content.push(
+            widget::button::text(fl!("provider-dashboard"))
+                .on_press(Message::OpenLink(url.to_owned())),
+        );
+    }
+
     if let Some(status) = &snapshot.status {
         let detail = if status.description.is_empty() {
             &status.indicator
         } else {
             &status.description
         };
-        if !detail.is_empty() {
-            content = content.push(widget::text::body(format!("Status · {detail}")));
+        if !detail.is_empty()
+            && let Some(url) = status_url(&status.url)
+        {
+            content = content.push(
+                widget::button::text(format!("{} · {detail}", fl!("provider-status")))
+                    .on_press(Message::OpenLink(url.to_owned())),
+            );
+        } else if !detail.is_empty() {
+            content = content.push(widget::text::body(format!(
+                "{} · {detail}",
+                fl!("provider-status")
+            )));
         }
+    }
+
+    if config.show_cost_summary
+        && let Some(spend_state) = spend_state
+    {
+        content = content
+            .push(widget::divider::horizontal::light())
+            .push(spend::summary_view(spend_state));
     }
 
     if let Some(error) = error {
         content = content
             .push(widget::divider::horizontal::light())
-            .push(widget::text::heading(fl!("refresh-error")))
-            .push(widget::text::body(error))
+            .push(
+                widget::button::text(if error_expanded {
+                    fl!("collapse-error")
+                } else {
+                    fl!("refresh-error")
+                })
+                .on_press(Message::ToggleError),
+            )
+            .push_maybe(error_expanded.then(|| widget::text::body(error)))
             .push(widget::button::text(fl!("copy-error")).on_press(Message::CopyError));
     }
 
@@ -216,6 +256,24 @@ fn changelog_url(provider: &str) -> Option<&'static str> {
     }
 }
 
+fn dashboard_url(provider: &str) -> Option<&'static str> {
+    match provider {
+        "codex" | "openai" => Some("https://platform.openai.com/usage"),
+        "claude" => Some("https://console.anthropic.com/settings/usage"),
+        "cursor" => Some("https://www.cursor.com/dashboard"),
+        "copilot" => Some("https://github.com/settings/copilot"),
+        "gemini" => Some("https://console.cloud.google.com/apis/dashboard"),
+        "openrouter" => Some("https://openrouter.ai/activity"),
+        _ => None,
+    }
+}
+
+fn status_url(value: &str) -> Option<&str> {
+    crate::settings::validated_https_url(value)
+        .ok()
+        .map(|_| value)
+}
+
 pub fn overview<'a>(
     snapshots: Vec<&'a Snapshot>,
     providers: &'a [Provider],
@@ -252,14 +310,14 @@ pub fn overview<'a>(
 }
 
 fn window_row(
-    label: &'static str,
+    label: String,
     window: &Window,
     config: &Config,
     threshold: u8,
 ) -> Element<'static, Message> {
     let reset = reset_label(window, config.reset_display);
     let title = if window.window_minutes == 0 {
-        label.to_owned()
+        label
     } else {
         format!("{label} · {}", window_duration(window.window_minutes))
     };
@@ -285,18 +343,29 @@ fn window_row(
         .into()
 }
 
-fn reset_label(window: &Window, display: ResetDisplay) -> &str {
+fn reset_label(window: &Window, display: ResetDisplay) -> String {
     match display {
         ResetDisplay::Countdown => window
             .reset_description
             .as_deref()
-            .or(window.resets_at.as_deref()),
+            .or(window.resets_at.as_deref())
+            .map(ToOwned::to_owned),
         ResetDisplay::Clock => window
             .resets_at
             .as_deref()
-            .or(window.reset_description.as_deref()),
+            .and_then(|reset| absolute_reset_time(reset, TimeZone::system()))
+            .or_else(|| window.reset_description.clone()),
     }
-    .unwrap_or("Reset unavailable")
+    .unwrap_or_else(|| fl!("reset-unavailable"))
+}
+
+fn absolute_reset_time(reset: &str, time_zone: TimeZone) -> Option<String> {
+    reset.parse::<Timestamp>().ok().map(|timestamp| {
+        timestamp
+            .to_zoned(time_zone)
+            .strftime("%Y-%m-%d %H:%M")
+            .to_string()
+    })
 }
 
 fn progress_markers(fill: UsageBarFill, warning: Option<u8>) -> Vec<f32> {
@@ -392,6 +461,26 @@ mod tests {
     }
 
     #[test]
+    fn provider_actions_only_use_known_valid_https_urls() {
+        for provider in [
+            "codex",
+            "claude",
+            "cursor",
+            "copilot",
+            "gemini",
+            "openrouter",
+        ] {
+            assert!(crate::settings::validated_https_url(dashboard_url(provider).unwrap()).is_ok());
+        }
+        assert!(dashboard_url("unknown").is_none());
+        assert_eq!(
+            status_url("https://status.example.com"),
+            Some("https://status.example.com")
+        );
+        assert!(status_url("javascript:alert(1)").is_none());
+    }
+
+    #[test]
     fn menu_presentation_changes_reset_and_fill_rendering() {
         let window = Window {
             resets_at: Some("2026-08-10T09:00:00Z".into()),
@@ -401,8 +490,8 @@ mod tests {
 
         assert_eq!(reset_label(&window, ResetDisplay::Countdown), "in 2 hours");
         assert_eq!(
-            reset_label(&window, ResetDisplay::Clock),
-            "2026-08-10T09:00:00Z"
+            absolute_reset_time("2026-08-10T09:00:00Z", TimeZone::UTC).as_deref(),
+            Some("2026-08-10 09:00")
         );
         assert!(progress_markers(UsageBarFill::Solid, None).is_empty());
         assert_eq!(progress_markers(UsageBarFill::Segmented, None).len(), 3);

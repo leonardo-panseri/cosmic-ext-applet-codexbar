@@ -147,27 +147,42 @@ pub struct State {
     pub refreshing: bool,
     pub error: Option<String>,
     pub failure_count: u32,
+    loaded_days: Option<u16>,
     refresh_day: Option<String>,
 }
 
 impl Default for State {
     fn default() -> Self {
-        let mut ranges = SingleSelectModel::default();
-        ranges.insert().text("7 days").data(7_u16).activate();
-        ranges.insert().text("30 days").data(30_u16);
-        Self {
+        let mut state = Self {
             days: 7,
-            ranges,
+            ranges: SingleSelectModel::default(),
             dashboard: Dashboard::default(),
             refreshing: false,
             error: None,
             failure_count: 0,
+            loaded_days: None,
             refresh_day: None,
-        }
+        };
+        state.rebuild_ranges();
+        state
     }
 }
 
 impl State {
+    pub fn rebuild_ranges(&mut self) {
+        self.ranges = SingleSelectModel::default();
+        self.ranges
+            .insert()
+            .text(fl!("cost-seven-days"))
+            .data(7_u16);
+        self.ranges
+            .insert()
+            .text(fl!("cost-thirty-days"))
+            .data(30_u16);
+        self.ranges
+            .activate_position(if self.days == 7 { 0 } else { 1 });
+    }
+
     pub fn set_days(&mut self, days: u16) {
         self.days = if days <= 7 { 7 } else { 30 };
         self.ranges
@@ -204,6 +219,7 @@ impl State {
         match result {
             Ok(reports) => {
                 self.dashboard = Dashboard::group(reports, days);
+                self.loaded_days = Some(days);
                 self.error = None;
             }
             Err(error) => {
@@ -211,6 +227,10 @@ impl State {
                 self.failure_count = self.failure_count.saturating_add(1);
             }
         }
+    }
+
+    fn summary_days(&self) -> u16 {
+        self.loaded_days.unwrap_or(self.days)
     }
 }
 
@@ -257,6 +277,39 @@ pub fn view(state: &State) -> Element<'_, Message> {
         state.failure_count
     )));
     settings::view_column(vec![content.into()]).into()
+}
+
+pub fn summary_view(state: &State) -> Element<'_, Message> {
+    let mut content = widget::column::with_capacity(state.dashboard.currencies.len() + 2)
+        .push(widget::text::heading(format!(
+            "{} · {}",
+            fl!("cost-summary"),
+            if state.summary_days() == 7 {
+                fl!("cost-seven-days")
+            } else {
+                fl!("cost-thirty-days")
+            }
+        )))
+        .spacing(6);
+    if state.refreshing && state.dashboard.currencies.is_empty() {
+        content = content.push(widget::text::caption(fl!("spend-loading")));
+    } else if state.dashboard.currencies.is_empty() {
+        content = content.push(widget::text::caption(fl!("spend-no-data")));
+    }
+    for currency in &state.dashboard.currencies {
+        let code = if currency.currency.is_empty() {
+            fl!("spend-unknown-currency")
+        } else {
+            currency.currency.clone()
+        };
+        content = content.push(
+            widget::row::with_capacity(2)
+                .push(widget::text::body(code.clone()))
+                .push(widget::space::horizontal())
+                .push(widget::text::body(money(&code, currency.total))),
+        );
+    }
+    content.into()
 }
 
 fn currency_view(currency: &CurrencySpend) -> Element<'_, Message> {
@@ -458,5 +511,17 @@ mod tests {
         assert_eq!(state.dashboard.currencies[0].total, 3.0);
         assert_eq!(state.error.as_deref(), Some("offline"));
         assert_eq!(state.failure_count, 1);
+    }
+
+    #[test]
+    fn failed_range_change_keeps_the_last_good_summary_range() {
+        let mut state = State::default();
+        state.finish(7, Ok(vec![report("codex", "USD", &[("2026-08-09", 3.0)])]));
+        state.set_days(30);
+        state.finish(30, Err("offline".into()));
+
+        assert_eq!(state.days, 30);
+        assert_eq!(state.summary_days(), 7);
+        assert_eq!(state.dashboard.currencies[0].total, 3.0);
     }
 }
