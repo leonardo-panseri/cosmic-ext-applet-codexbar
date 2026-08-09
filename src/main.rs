@@ -4,6 +4,7 @@ mod app;
 mod codexbar;
 mod config;
 mod i18n;
+mod popup;
 
 fn main() -> cosmic::iced::Result {
     // Get the system's preferred languages.

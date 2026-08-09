@@ -9,3 +9,4 @@ refresh-usage = Refresh
 refreshing-usage = Refreshing…
 copy-error = Copy error
 refresh-error = Usage data may be stale
+overview = Overview

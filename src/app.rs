@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::codexbar::{self, Snapshot, Window};
+use crate::codexbar::{self, Provider, Snapshot, Window};
 use crate::config::{Config, IconStyle, RefreshInterval};
 use crate::fl;
+use crate::popup;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
 use cosmic::iced::{
@@ -14,8 +15,17 @@ use cosmic::iced::{
 };
 use cosmic::prelude::*;
 use cosmic::widget;
+use cosmic::widget::segmented_button::{self, SingleSelectModel};
 use jiff::Timestamp;
 use std::time::Duration;
+
+#[derive(Debug, Default, Clone, Eq, PartialEq)]
+enum Selection {
+    #[default]
+    Auto,
+    Overview,
+    Provider(String),
+}
 
 /// The application model stores app-specific state used to describe its interface and
 /// drive its logic.
@@ -29,6 +39,12 @@ pub struct AppModel {
     config: Config,
     /// Last successfully loaded all-provider snapshot.
     snapshots: Vec<Snapshot>,
+    /// Provider metadata in the order returned by codexbar configuration.
+    providers: Vec<Provider>,
+    /// Provider or overview currently shown in the popup.
+    selection: Selection,
+    /// Native switcher model rebuilt when snapshots or configuration change.
+    provider_tabs: SingleSelectModel,
     /// The latest refresh failure; snapshots remain visible while this is set.
     refresh_error: Option<String>,
     /// Whether a usage request is currently running.
@@ -44,6 +60,8 @@ pub enum Message {
     PopupClosed(Id),
     RefreshRequested,
     SnapshotsLoaded(Result<Vec<Snapshot>, String>),
+    ProvidersLoaded(Result<Vec<Provider>, String>),
+    SelectTab(segmented_button::Entity),
     UpdateConfig(Config),
     CopyError,
 }
@@ -53,6 +71,16 @@ impl AppModel {
         cosmic::task::future(async {
             Message::SnapshotsLoaded(
                 codexbar::usage_snapshot()
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        })
+    }
+
+    fn providers_task() -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async {
+            Message::ProvidersLoaded(
+                codexbar::providers()
                     .await
                     .map_err(|error| error.to_string()),
             )
@@ -88,22 +116,49 @@ impl AppModel {
                     snapshot.error = Some(error);
                 }
                 self.snapshots = snapshots;
+                if matches!(self.selection, Selection::Auto)
+                    || matches!(
+                        &self.selection,
+                        Selection::Provider(provider)
+                            if !self.snapshots.iter().any(|snapshot| &snapshot.provider == provider)
+                    )
+                {
+                    self.selection = most_used_provider(&self.snapshots).unwrap_or_default();
+                }
                 self.refresh_error = None;
                 self.refresh_period = refresh_period(
                     self.config.refresh_interval,
                     &self.snapshots,
                     Timestamp::now(),
                 );
+                self.rebuild_provider_tabs();
             }
             Err(error) => self.refresh_error = Some(error),
         }
     }
 
     fn selected_snapshot(&self) -> Option<&Snapshot> {
+        let Selection::Provider(provider) = &self.selection else {
+            return self
+                .snapshots
+                .iter()
+                .filter(|snapshot| snapshot.usage.is_some())
+                .max_by(|left, right| snapshot_percent(left).total_cmp(&snapshot_percent(right)))
+                .or_else(|| self.snapshots.first());
+        };
         self.snapshots
             .iter()
-            .find(|snapshot| snapshot.usage.is_some())
+            .find(|snapshot| &snapshot.provider == provider)
             .or_else(|| self.snapshots.first())
+    }
+
+    fn rebuild_provider_tabs(&mut self) {
+        self.provider_tabs = provider_tabs(
+            &self.snapshots,
+            &self.providers,
+            &self.config.overview_providers,
+            &self.selection,
+        );
     }
 
     fn error_detail(&self) -> Option<String> {
@@ -124,94 +179,6 @@ impl AppModel {
                 format!("{source}: {}", error.message)
             })
         })
-    }
-
-    fn provider_card<'a>(&'a self, snapshot: &'a Snapshot) -> Element<'a, Message> {
-        let mut content = widget::column::with_capacity(12).spacing(12);
-        let identity = snapshot.usage.as_ref().map(|usage| &usage.identity);
-        let provider = if snapshot.provider.is_empty() {
-            identity
-                .map(|identity| identity.provider_id.as_str())
-                .filter(|provider| !provider.is_empty())
-                .unwrap_or("CodexBar")
-        } else {
-            &snapshot.provider
-        };
-
-        let mut header = widget::row::with_capacity(4)
-            .push(widget::text::heading(provider))
-            .push(widget::space::horizontal())
-            .align_y(Alignment::Center);
-        if let Some(plan) = identity
-            .map(|identity| identity.login_method.as_str())
-            .filter(|plan| !plan.is_empty())
-        {
-            header =
-                header.push(widget::container(widget::text::caption_heading(plan)).padding([4, 8]));
-        }
-        header = header.push(
-            widget::button::text(if self.refreshing {
-                fl!("refreshing-usage")
-            } else {
-                fl!("refresh-usage")
-            })
-            .on_press_maybe((!self.refreshing).then_some(Message::RefreshRequested)),
-        );
-        content = content.push(header);
-
-        if let Some(identity) = identity {
-            if !identity.account_email.is_empty() {
-                content = content.push(widget::text::body(&identity.account_email));
-            }
-            if !identity.account_organization.is_empty() {
-                content = content.push(widget::text::caption(&identity.account_organization));
-            }
-        }
-
-        for (label, window) in available_windows(snapshot) {
-            content = content.push(window_row(label, window));
-        }
-
-        if let Some(summary) = snapshot.pace.as_ref().and_then(|pace| {
-            [&pace.primary, &pace.secondary, &pace.tertiary]
-                .into_iter()
-                .flatten()
-                .map(|pace| pace.summary.as_str())
-                .find(|summary| !summary.is_empty())
-        }) {
-            content = content.push(widget::text::body(format!("Pace · {summary}")));
-        }
-
-        if let Some(credits) = &snapshot.credits {
-            content = content.push(widget::text::body(format!(
-                "Credits · {:.2}",
-                credits.remaining
-            )));
-        }
-
-        if let Some(status) = &snapshot.status {
-            let detail = if status.description.is_empty() {
-                &status.indicator
-            } else {
-                &status.description
-            };
-            if !detail.is_empty() {
-                content = content.push(widget::text::body(format!("Status · {detail}")));
-            }
-        }
-
-        if let Some(error) = self.error_detail() {
-            content = content
-                .push(widget::divider::horizontal::light())
-                .push(widget::text::heading(fl!("refresh-error")))
-                .push(widget::text::body(error))
-                .push(widget::button::text(fl!("copy-error")).on_press(Message::CopyError));
-        }
-
-        widget::container(content)
-            .padding(16)
-            .width(Length::Fill)
-            .into()
     }
 
     fn panel_button(&self, label: Option<String>, has_error: bool) -> Element<'_, Message> {
@@ -277,7 +244,9 @@ fn indicator_icon(has_error: bool, size: u16) -> Element<'static, Message> {
     }
 }
 
-fn available_windows(snapshot: &Snapshot) -> impl Iterator<Item = (&'static str, &Window)> {
+pub(crate) fn available_windows(
+    snapshot: &Snapshot,
+) -> impl Iterator<Item = (&'static str, &Window)> {
     let usage = snapshot.usage.as_ref();
     [
         ("Session", usage.and_then(|usage| usage.primary.as_ref())),
@@ -288,11 +257,81 @@ fn available_windows(snapshot: &Snapshot) -> impl Iterator<Item = (&'static str,
     .filter_map(|(label, window)| window.map(|window| (label, window)))
 }
 
-fn snapshot_percent(snapshot: &Snapshot) -> f32 {
+pub(crate) fn snapshot_percent(snapshot: &Snapshot) -> f32 {
     available_windows(snapshot)
         .map(|(_, window)| window.used_percent)
         .max_by(f32::total_cmp)
         .unwrap_or_default()
+}
+
+fn most_used_provider(snapshots: &[Snapshot]) -> Option<Selection> {
+    snapshots
+        .iter()
+        .filter(|snapshot| snapshot.usage.is_some())
+        .max_by(|left, right| snapshot_percent(left).total_cmp(&snapshot_percent(right)))
+        .map(|snapshot| Selection::Provider(snapshot.provider.clone()))
+}
+
+fn ordered_snapshots<'a>(snapshots: &'a [Snapshot], providers: &[Provider]) -> Vec<&'a Snapshot> {
+    let mut ordered = snapshots.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|snapshot| {
+        providers
+            .iter()
+            .position(|provider| provider.id == snapshot.provider)
+            .unwrap_or(usize::MAX)
+    });
+    ordered
+}
+
+fn overview_snapshots<'a>(
+    snapshots: &'a [Snapshot],
+    providers: &[Provider],
+    selected: &[String],
+) -> Vec<&'a Snapshot> {
+    ordered_snapshots(snapshots, providers)
+        .into_iter()
+        .filter(|snapshot| {
+            selected
+                .iter()
+                .take(6)
+                .any(|provider| provider == &snapshot.provider)
+        })
+        .take(6)
+        .collect()
+}
+
+fn provider_tabs(
+    snapshots: &[Snapshot],
+    providers: &[Provider],
+    overview_providers: &[String],
+    selection: &Selection,
+) -> SingleSelectModel {
+    let mut tabs = SingleSelectModel::default();
+    if !overview_providers.is_empty() {
+        let id = tabs
+            .insert()
+            .text(fl!("overview"))
+            .data(Selection::Overview)
+            .id();
+        if *selection == Selection::Overview {
+            tabs.activate(id);
+        }
+    }
+    for snapshot in ordered_snapshots(snapshots, providers) {
+        let tab = Selection::Provider(snapshot.provider.clone());
+        let label = providers
+            .iter()
+            .find(|provider| provider.id == snapshot.provider)
+            .map(|provider| provider.display_name.as_str())
+            .filter(|label| !label.is_empty())
+            .unwrap_or(&snapshot.provider)
+            .to_owned();
+        let id = tabs.insert().text(label).data(tab.clone()).id();
+        if selection == &tab {
+            tabs.activate(id);
+        }
+    }
+    tabs
 }
 
 fn refresh_period(interval: RefreshInterval, snapshots: &[Snapshot], now: Timestamp) -> Duration {
@@ -311,43 +350,6 @@ fn refresh_period(interval: RefreshInterval, snapshots: &[Snapshot], now: Timest
         .unwrap_or(300)
         .max(60);
     Duration::from_secs(seconds as u64)
-}
-
-fn window_row(label: &'static str, window: &Window) -> Element<'static, Message> {
-    let reset = window
-        .reset_description
-        .as_deref()
-        .or(window.resets_at.as_deref())
-        .unwrap_or("Reset unavailable");
-    let title = if window.window_minutes == 0 {
-        label.to_owned()
-    } else {
-        format!("{label} · {}", window_duration(window.window_minutes))
-    };
-
-    widget::column::with_capacity(3)
-        .push(
-            widget::row::with_capacity(2)
-                .push(widget::text::body(title))
-                .push(widget::space::horizontal())
-                .push(widget::text::body(format!("{:.0}%", window.used_percent))),
-        )
-        .push(widget::determinate_linear(window.used_percent / 100.0).width(Length::Fill))
-        .push(widget::text::caption(reset.to_owned()))
-        .spacing(4)
-        .into()
-}
-
-fn window_duration(minutes: u32) -> String {
-    if minutes.is_multiple_of(10_080) {
-        format!("{}w", minutes / 10_080)
-    } else if minutes.is_multiple_of(1_440) {
-        format!("{}d", minutes / 1_440)
-    } else if minutes.is_multiple_of(60) {
-        format!("{}h", minutes / 60)
-    } else {
-        format!("{minutes}m")
-    }
 }
 
 /// Create a COSMIC application from the app model
@@ -395,13 +397,17 @@ impl cosmic::Application for AppModel {
             refreshing: true,
             ..Default::default()
         };
+        app.config.overview_providers.truncate(6);
         app.refresh_period = refresh_period(
             app.config.refresh_interval,
             &app.snapshots,
             Timestamp::now(),
         );
 
-        (app, Self::refresh_task())
+        (
+            app,
+            Task::batch([Self::refresh_task(), Self::providers_task()]),
+        )
     }
 
     fn on_close_requested(&self, id: Id) -> Option<Message> {
@@ -439,8 +445,17 @@ impl cosmic::Application for AppModel {
     /// multiple poups, you may match the id parameter to determine which popup to
     /// create a view for.
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
-        let content = if let Some(snapshot) = self.selected_snapshot() {
-            self.provider_card(snapshot)
+        let body = if self.selection == Selection::Overview {
+            popup::overview(
+                overview_snapshots(
+                    &self.snapshots,
+                    &self.providers,
+                    &self.config.overview_providers,
+                ),
+                &self.providers,
+            )
+        } else if let Some(snapshot) = self.selected_snapshot() {
+            crate::popup::provider_card(snapshot, self.refreshing, self.error_detail())
         } else if let Some(error) = self.error_detail() {
             widget::container(
                 widget::column::with_capacity(3)
@@ -457,6 +472,20 @@ impl cosmic::Application for AppModel {
                 .padding(16)
                 .width(Length::Fill)
                 .into()
+        };
+
+        let content = if self.provider_tabs.iter().count() > 1 {
+            widget::column::with_capacity(2)
+                .push(
+                    widget::segmented_control::horizontal(&self.provider_tabs)
+                        .on_activate(Message::SelectTab),
+                )
+                .push(body)
+                .spacing(12)
+                .padding([12, 0])
+                .into()
+        } else {
+            body
         };
 
         self.core.applet.popup_container(content).into()
@@ -497,8 +526,27 @@ impl cosmic::Application for AppModel {
                 }
             }
             Message::SnapshotsLoaded(result) => self.apply_snapshot_result(result),
-            Message::UpdateConfig(config) => {
+            Message::ProvidersLoaded(Ok(providers)) => {
+                self.providers = providers;
+                self.rebuild_provider_tabs();
+            }
+            Message::ProvidersLoaded(Err(_)) => {}
+            Message::SelectTab(id) => {
+                let Some(selection) = self.provider_tabs.data::<Selection>(id).cloned() else {
+                    return Task::none();
+                };
+                self.selection = selection;
+                self.provider_tabs.activate(id);
+            }
+            Message::UpdateConfig(mut config) => {
+                config.overview_providers.truncate(6);
                 self.config = config;
+                if self.config.overview_providers.is_empty()
+                    && self.selection == Selection::Overview
+                {
+                    self.selection = most_used_provider(&self.snapshots).unwrap_or_default();
+                }
+                self.rebuild_provider_tabs();
                 self.refresh_period = refresh_period(
                     self.config.refresh_interval,
                     &self.snapshots,
@@ -553,9 +601,119 @@ impl cosmic::Application for AppModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codexbar::{ProviderError, Snapshot, Usage, Window};
+    use crate::codexbar::{Provider, ProviderError, Snapshot, Usage, Window};
     use crate::config::RefreshInterval;
     use jiff::Timestamp;
+
+    #[test]
+    fn provider_tabs_follow_configuration_order() {
+        let snapshots = vec![
+            Snapshot {
+                provider: "codex".into(),
+                ..Default::default()
+            },
+            Snapshot {
+                provider: "claude".into(),
+                ..Default::default()
+            },
+        ];
+        let providers = vec![
+            Provider {
+                id: "claude".into(),
+                ..Default::default()
+            },
+            Provider {
+                id: "codex".into(),
+                ..Default::default()
+            },
+        ];
+
+        let tabs = provider_tabs(
+            &snapshots,
+            &providers,
+            &[],
+            &Selection::Provider("claude".into()),
+        );
+        assert_eq!(
+            tabs.iter()
+                .filter_map(|id| tabs.text(id))
+                .collect::<Vec<_>>(),
+            ["claude", "codex"]
+        );
+    }
+
+    #[test]
+    fn overview_contains_at_most_six_selected_providers() {
+        let snapshots = (0..8)
+            .map(|index| Snapshot {
+                provider: format!("provider-{index}"),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let selected = snapshots
+            .iter()
+            .map(|snapshot| snapshot.provider.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(overview_snapshots(&snapshots, &[], &selected).len(), 6);
+    }
+
+    #[test]
+    fn overview_tab_is_hidden_without_selected_providers() {
+        let tabs = provider_tabs(
+            &[Snapshot {
+                provider: "codex".into(),
+                ..Default::default()
+            }],
+            &[],
+            &[],
+            &Selection::Provider("codex".into()),
+        );
+
+        assert_eq!(
+            tabs.iter()
+                .filter_map(|id| tabs.text(id))
+                .collect::<Vec<_>>(),
+            ["codex"]
+        );
+    }
+
+    #[test]
+    fn initial_selection_uses_highest_usage() {
+        let snapshots = vec![
+            Snapshot {
+                provider: "codex".into(),
+                usage: Some(Usage {
+                    secondary: Some(Window {
+                        used_percent: 20.0,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            Snapshot {
+                provider: "claude".into(),
+                usage: Some(Usage {
+                    primary: Some(Window {
+                        used_percent: 80.0,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ];
+
+        let mut app = AppModel::default();
+        app.apply_snapshot_result(Ok(snapshots));
+
+        assert_eq!(
+            app.selected_snapshot()
+                .map(|snapshot| snapshot.provider.as_str()),
+            Some("claude")
+        );
+    }
 
     #[test]
     fn unavailable_windows_are_omitted() {

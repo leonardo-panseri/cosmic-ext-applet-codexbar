@@ -36,11 +36,12 @@ impl RefreshInterval {
 }
 
 #[derive(Debug, Clone, CosmicConfigEntry, Eq, PartialEq)]
-#[version = 3]
+#[version = 4]
 pub struct Config {
     pub icon_style: IconStyle,
     pub refresh_interval: RefreshInterval,
     pub refresh_on_popup_open: bool,
+    pub overview_providers: Vec<String>,
 }
 
 impl Default for Config {
@@ -49,6 +50,7 @@ impl Default for Config {
             icon_style: IconStyle::default(),
             refresh_interval: RefreshInterval::default(),
             refresh_on_popup_open: true,
+            overview_providers: Vec::new(),
         }
     }
 }

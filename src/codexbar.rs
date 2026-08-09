@@ -12,6 +12,14 @@ pub type Timestamp = String;
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+pub struct Provider {
+    #[serde(rename = "provider")]
+    pub id: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct Snapshot {
     pub provider: String,
     pub source: String,
@@ -108,6 +116,10 @@ pub async fn usage_snapshot() -> Result<Vec<Snapshot>, Error> {
     run_json(&["usage", "--provider", "all", "--format", "json", "--status"]).await
 }
 
+pub async fn providers() -> Result<Vec<Provider>, Error> {
+    run_json(&["config", "providers", "--json"]).await
+}
+
 async fn run_json<T: DeserializeOwned>(args: &[&str]) -> Result<T, Error> {
     let mut command = Command::new("codexbar");
     command.args(args).kill_on_drop(true);
@@ -135,6 +147,25 @@ async fn run_json<T: DeserializeOwned>(args: &[&str]) -> Result<T, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_configuration_keeps_cli_order() {
+        let providers: Vec<Provider> = serde_json::from_str(
+            r#"[
+                {"provider":"claude","displayName":"Claude","enabled":true},
+                {"provider":"codex","displayName":"Codex","enabled":true}
+            ]"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            providers
+                .iter()
+                .map(|provider| provider.id.as_str())
+                .collect::<Vec<_>>(),
+            ["claude", "codex"]
+        );
+    }
 
     #[test]
     fn deserializes_ragged_usage_snapshot() {
