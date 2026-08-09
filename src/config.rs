@@ -2,6 +2,54 @@
 
 use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Thresholds {
+    pub primary: u8,
+    pub secondary: u8,
+    pub tertiary: u8,
+}
+
+impl Default for Thresholds {
+    fn default() -> Self {
+        Self {
+            primary: 80,
+            secondary: 80,
+            tertiary: 80,
+        }
+    }
+}
+
+impl Thresholds {
+    fn normalize(&mut self) {
+        self.primary = self.primary.clamp(1, 99);
+        self.secondary = self.secondary.clamp(1, 99);
+        self.tertiary = self.tertiary.clamp(1, 99);
+    }
+}
+
+#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThresholdSettings {
+    pub defaults: Thresholds,
+    pub providers: BTreeMap<String, Thresholds>,
+}
+
+impl ThresholdSettings {
+    pub fn for_provider(&self, provider: &str) -> Thresholds {
+        self.providers
+            .get(provider)
+            .copied()
+            .unwrap_or(self.defaults)
+    }
+
+    fn normalize(&mut self) {
+        self.defaults.normalize();
+        for thresholds in self.providers.values_mut() {
+            thresholds.normalize();
+        }
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 pub enum IconStyle {
@@ -58,7 +106,7 @@ impl RefreshInterval {
 }
 
 #[derive(Debug, Clone, CosmicConfigEntry, Eq, PartialEq, Serialize, Deserialize)]
-#[version = 5]
+#[version = 6]
 pub struct Config {
     pub icon_style: IconStyle,
     pub refresh_interval: RefreshInterval,
@@ -73,6 +121,9 @@ pub struct Config {
     pub switcher_rows: u8,
     pub usage_bar_fill: UsageBarFill,
     pub warning_markers: bool,
+    pub notifications_enabled: bool,
+    pub notification_sound: bool,
+    pub quota_thresholds: ThresholdSettings,
     pub reset_display: ResetDisplay,
     pub show_credits: bool,
     pub show_cost_summary: bool,
@@ -98,6 +149,9 @@ impl Default for Config {
             switcher_rows: 3,
             usage_bar_fill: UsageBarFill::default(),
             warning_markers: true,
+            notifications_enabled: true,
+            notification_sound: true,
+            quota_thresholds: ThresholdSettings::default(),
             reset_display: ResetDisplay::default(),
             show_credits: true,
             show_cost_summary: false,
@@ -114,6 +168,7 @@ impl Config {
         self.overview_providers.truncate(6);
         self.switcher_rows = self.switcher_rows.clamp(1, 6);
         self.cost_summary_days = if self.cost_summary_days <= 7 { 7 } else { 30 };
+        self.quota_thresholds.normalize();
     }
 }
 
@@ -138,5 +193,20 @@ mod tests {
         assert_eq!(round_trip.overview_providers.len(), 6);
         assert_eq!(round_trip.switcher_rows, 6);
         assert_eq!(round_trip.cost_summary_days, 30);
+    }
+
+    #[test]
+    fn provider_quota_thresholds_override_global_defaults() {
+        let mut settings = ThresholdSettings::default();
+        settings.providers.insert(
+            "codex".into(),
+            Thresholds {
+                primary: 90,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(settings.for_provider("codex").primary, 90);
+        assert_eq!(settings.for_provider("claude").primary, 80);
     }
 }

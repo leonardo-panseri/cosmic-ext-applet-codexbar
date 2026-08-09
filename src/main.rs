@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod alerts;
 mod app;
 mod codexbar;
 mod config;

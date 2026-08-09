@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::app::Message;
-use crate::codexbar::{ConfigDump, Provider, Snapshot};
+use crate::codexbar::{ConfigDump, HooksConfig, Provider, Snapshot};
 use crate::config::{
     Config, IconStyle, PresentationLayout, RefreshInterval, ResetDisplay, UsageBarFill,
 };
@@ -50,6 +50,8 @@ pub struct State {
     pub selected_provider: Option<String>,
     pub dump: ConfigDump,
     pub error: Option<String>,
+    pub hooks: HooksConfig,
+    pub notification_provider: Option<String>,
 }
 
 impl Default for State {
@@ -74,6 +76,8 @@ impl Default for State {
             selected_provider: None,
             dump: ConfigDump::default(),
             error: None,
+            hooks: HooksConfig::default(),
+            notification_provider: None,
         }
     }
 }
@@ -113,6 +117,10 @@ pub enum ConfigChange {
     ShowStorageUsage(bool),
     ShowDebug(bool),
     OverviewProvider(String, bool),
+    NotificationsEnabled(bool),
+    NotificationSound(bool),
+    QuotaThreshold(Option<String>, usize, usize),
+    ClearProviderThreshold(String),
 }
 
 impl ConfigChange {
@@ -172,6 +180,28 @@ impl ConfigChange {
                     config.overview_providers.push(provider);
                 }
             }
+            Self::NotificationsEnabled(value) => config.notifications_enabled = value,
+            Self::NotificationSound(value) => config.notification_sound = value,
+            Self::QuotaThreshold(provider, lane, index) => {
+                let value = [50, 75, 80, 85, 90, 95][index.min(5)];
+                let defaults = config.quota_thresholds.defaults;
+                let thresholds = match provider {
+                    Some(provider) => config
+                        .quota_thresholds
+                        .providers
+                        .entry(provider)
+                        .or_insert(defaults),
+                    None => &mut config.quota_thresholds.defaults,
+                };
+                match lane {
+                    0 => thresholds.primary = value,
+                    1 => thresholds.secondary = value,
+                    _ => thresholds.tertiary = value,
+                }
+            }
+            Self::ClearProviderThreshold(provider) => {
+                config.quota_thresholds.providers.remove(&provider);
+            }
         }
         config.normalize();
     }
@@ -226,12 +256,9 @@ pub fn view<'a>(
         Pane::General => general(config),
         Pane::MenuBar => menu_bar(config, providers),
         Pane::Menu => menu(config),
-        Pane::Notifications => deferred(
-            fl!("settings-notifications"),
-            fl!("settings-notifications-deferred"),
-        ),
+        Pane::Notifications => notifications(state, config, providers),
         Pane::Advanced => advanced(config),
-        Pane::Hooks => deferred(fl!("settings-hooks"), fl!("settings-hooks-deferred")),
+        Pane::Hooks => hooks(state, providers),
         Pane::About => about(),
         Pane::Providers => {
             providers_view(state, config, providers, snapshots, refreshing, usage_error)
@@ -451,12 +478,144 @@ fn advanced(config: &Config) -> Element<'_, Message> {
     .into()
 }
 
-fn deferred(title: String, description: String) -> Element<'static, Message> {
+fn notifications<'a>(
+    state: &'a State,
+    config: &'a Config,
+    providers: &'a [Provider],
+) -> Element<'a, Message> {
+    let selected = state
+        .notification_provider
+        .as_deref()
+        .and_then(|id| providers.iter().position(|provider| provider.id == id))
+        .map_or(0, |index| index + 1);
+    let mut provider_names = vec![fl!("settings-global-defaults")];
+    provider_names.extend(
+        providers
+            .iter()
+            .map(|provider| provider_name(provider).to_owned()),
+    );
+    let thresholds = state
+        .notification_provider
+        .as_deref()
+        .map_or(config.quota_thresholds.defaults, |provider| {
+            config.quota_thresholds.for_provider(provider)
+        });
+    let provider = state.notification_provider.clone();
+    let mut threshold_section = settings::section()
+        .title(fl!("settings-quota-thresholds"))
+        .add(settings::item(
+            fl!("settings-threshold-provider"),
+            widget::dropdown(
+                provider_names,
+                Some(selected),
+                Message::SelectNotificationProvider,
+            ),
+        ));
+    for (lane, label, value) in [
+        (0, fl!("settings-session-threshold"), thresholds.primary),
+        (1, fl!("settings-weekly-threshold"), thresholds.secondary),
+        (2, fl!("settings-monthly-threshold"), thresholds.tertiary),
+    ] {
+        let target = provider.clone();
+        threshold_section = threshold_section.add(settings::item(
+            label,
+            widget::dropdown(
+                vec!["50%", "75%", "80%", "85%", "90%", "95%"],
+                Some(threshold_index(value)),
+                move |index| {
+                    Message::SettingsConfig(ConfigChange::QuotaThreshold(
+                        target.clone(),
+                        lane,
+                        index,
+                    ))
+                },
+            ),
+        ));
+    }
+    if let Some(provider) = &state.notification_provider {
+        threshold_section = threshold_section.add(settings::item_row(vec![
+            widget::button::text(fl!("settings-use-global-thresholds"))
+                .on_press(Message::SettingsConfig(
+                    ConfigChange::ClearProviderThreshold(provider.clone()),
+                ))
+                .into(),
+        ]));
+    }
+
     settings::view_column(vec![
-        widget::text::title3(title).into(),
-        widget::text::body(description).into(),
+        widget::text::title3(fl!("settings-notifications")).into(),
+        settings::section()
+            .add(settings::item(
+                fl!("settings-enable-notifications"),
+                toggler(config.notifications_enabled).on_toggle(|value| {
+                    Message::SettingsConfig(ConfigChange::NotificationsEnabled(value))
+                }),
+            ))
+            .add(settings::item(
+                fl!("settings-notification-sound"),
+                toggler(config.notification_sound).on_toggle(|value| {
+                    Message::SettingsConfig(ConfigChange::NotificationSound(value))
+                }),
+            ))
+            .into(),
+        threshold_section.into(),
     ])
     .into()
+}
+
+fn hooks<'a>(state: &'a State, providers: &'a [Provider]) -> Element<'a, Message> {
+    let mut rules = settings::section().title(fl!("settings-hook-rules"));
+    if state.hooks.events.is_empty() {
+        rules = rules.add(settings::item(
+            fl!("settings-no-hook-rules"),
+            widget::text::body(fl!("settings-hooks-config-file")),
+        ));
+    }
+    for rule in &state.hooks.events {
+        let provider = rule
+            .provider
+            .clone()
+            .or_else(|| providers.first().map(|provider| provider.id.clone()))
+            .unwrap_or_else(|| "codex".into());
+        let detail = format!("{} · {}", rule.event, rule.executable);
+        rules = rules.add(settings::item(
+            if rule.id.is_empty() {
+                &rule.event
+            } else {
+                &rule.id
+            },
+            widget::row::with_capacity(2)
+                .push(widget::text::caption(detail))
+                .push(
+                    widget::button::text(fl!("settings-test-hook"))
+                        .on_press(Message::TestHook(rule.event.clone(), provider)),
+                ),
+        ));
+    }
+    settings::view_column(vec![
+        widget::text::title3(fl!("settings-hooks")).into(),
+        state
+            .error
+            .as_ref()
+            .map(widget::text::body)
+            .unwrap_or_else(|| widget::text::body(""))
+            .into(),
+        settings::section()
+            .add(settings::item(
+                fl!("settings-enable-hooks"),
+                toggler(state.hooks.enabled).on_toggle(Message::SetHooksEnabled),
+            ))
+            .into(),
+        rules.into(),
+    ])
+    .into()
+}
+
+fn threshold_index(value: u8) -> usize {
+    [50, 75, 80, 85, 90, 95]
+        .iter()
+        .position(|threshold| *threshold == value)
+        .unwrap_or(2)
 }
 
 fn about() -> Element<'static, Message> {
@@ -693,6 +852,10 @@ mod tests {
             ConfigChange::UsageBarFill(1),
             ConfigChange::ResetDisplay(1),
             ConfigChange::ShowCredits(false),
+            ConfigChange::NotificationsEnabled(false),
+            ConfigChange::NotificationSound(false),
+            ConfigChange::QuotaThreshold(None, 0, 4),
+            ConfigChange::QuotaThreshold(Some("codex".into()), 1, 5),
         ] {
             change.apply(&mut config);
         }
@@ -703,5 +866,9 @@ mod tests {
         assert_eq!(config.usage_bar_fill, UsageBarFill::Segmented);
         assert_eq!(config.reset_display, ResetDisplay::Clock);
         assert!(!config.show_credits);
+        assert!(!config.notifications_enabled);
+        assert!(!config.notification_sound);
+        assert_eq!(config.quota_thresholds.defaults.primary, 90);
+        assert_eq!(config.quota_thresholds.for_provider("codex").secondary, 95);
     }
 }

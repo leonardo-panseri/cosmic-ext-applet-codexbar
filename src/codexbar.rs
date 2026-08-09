@@ -39,6 +39,42 @@ pub struct ProviderConfig {
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+pub struct HooksConfig {
+    pub enabled: bool,
+    #[serde(alias = "rules")]
+    pub events: Vec<HookRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HookRule {
+    pub id: String,
+    pub enabled: bool,
+    pub event: String,
+    pub provider: Option<String>,
+    pub threshold: Option<f64>,
+    pub executable: String,
+    pub arguments: Vec<String>,
+    pub timeout_seconds: f64,
+}
+
+impl Default for HookRule {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            enabled: false,
+            event: String::new(),
+            provider: None,
+            threshold: None,
+            executable: String::new(),
+            arguments: Vec::new(),
+            timeout_seconds: 10.0,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct Snapshot {
     pub provider: String,
     pub source: String,
@@ -73,6 +109,8 @@ pub struct Identity {
 #[serde(default, rename_all = "camelCase")]
 pub struct Window {
     pub used_percent: f32,
+    pub used: Option<f64>,
+    pub limit: Option<f64>,
     pub resets_at: Option<Timestamp>,
     pub reset_description: Option<String>,
     pub window_minutes: u32,
@@ -151,6 +189,22 @@ pub async fn config_dump() -> Result<ConfigDump, Error> {
     run_json(&["config", "dump", "--json"]).await
 }
 
+pub async fn hooks() -> Result<HooksConfig, Error> {
+    run_json(&["hooks", "list", "--format", "json"]).await
+}
+
+pub async fn set_hooks_enabled(enabled: bool) -> Result<(), Error> {
+    run(&["hooks", if enabled { "enable" } else { "disable" }])
+        .await
+        .map(drop)
+}
+
+pub async fn test_hook(event: &str, provider: &str) -> Result<(), Error> {
+    run(&["hooks", "test", event, "--provider", provider])
+        .await
+        .map(drop)
+}
+
 fn provider_toggle_args(provider: &str, enabled: bool) -> [String; 5] {
     [
         "config".into(),
@@ -191,6 +245,15 @@ where
     T: DeserializeOwned,
     S: AsRef<OsStr>,
 {
+    let output = run(args).await?;
+    serde_json::from_slice(&output)
+        .map_err(|error| Error(format!("invalid codexbar JSON: {error}")))
+}
+
+async fn run<S>(args: &[S]) -> Result<Vec<u8>, Error>
+where
+    S: AsRef<OsStr>,
+{
     let mut command = Command::new("codexbar");
     command.args(args).kill_on_drop(true);
 
@@ -210,8 +273,7 @@ where
         return Err(Error(format!("codexbar failed: {detail}")));
     }
 
-    serde_json::from_slice(&output.stdout)
-        .map_err(|error| Error(format!("invalid codexbar JSON: {error}")))
+    Ok(output.stdout)
 }
 
 #[cfg(test)]
@@ -276,6 +338,19 @@ mod tests {
     fn provider_status_flag_follows_applet_preference() {
         assert!(usage_args(true).contains(&"--status"));
         assert!(!usage_args(false).contains(&"--status"));
+    }
+
+    #[test]
+    fn hook_list_uses_existing_codexbar_rule_schema() {
+        let hooks: HooksConfig = serde_json::from_str(
+            r#"{"enabled":true,"events":[{"id":"warn","enabled":true,"event":"quota_low","provider":"codex","threshold":0.8,"executable":"/usr/bin/notify-send","arguments":["quota"],"timeoutSeconds":5}]}"#,
+        )
+        .unwrap();
+
+        assert!(hooks.enabled);
+        assert_eq!(hooks.events[0].event, "quota_low");
+        assert_eq!(hooks.events[0].arguments, ["quota"]);
+        assert_eq!(hooks.events[0].timeout_seconds, 5.0);
     }
 
     #[test]

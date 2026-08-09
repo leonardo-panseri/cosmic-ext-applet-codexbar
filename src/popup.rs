@@ -65,8 +65,14 @@ pub fn provider_card<'a>(
         }
     }
 
+    let thresholds = config.quota_thresholds.for_provider(&snapshot.provider);
     for (label, window) in available_windows(snapshot) {
-        content = content.push(window_row(label, window, config));
+        let threshold = match label {
+            "Session" => thresholds.primary,
+            "Weekly" => thresholds.secondary,
+            _ => thresholds.tertiary,
+        };
+        content = content.push(window_row(label, window, config, threshold));
     }
 
     if let Some(summary) = snapshot.pace.as_ref().and_then(|pace| {
@@ -148,7 +154,12 @@ pub fn overview<'a>(
         .into()
 }
 
-fn window_row(label: &'static str, window: &Window, config: &Config) -> Element<'static, Message> {
+fn window_row(
+    label: &'static str,
+    window: &Window,
+    config: &Config,
+    threshold: u8,
+) -> Element<'static, Message> {
     let reset = reset_label(window, config.reset_display);
     let title = if window.window_minutes == 0 {
         label.to_owned()
@@ -165,7 +176,10 @@ fn window_row(label: &'static str, window: &Window, config: &Config) -> Element<
         )
         .push(
             widget::determinate_linear(window.used_percent / 100.0)
-                .markers(progress_markers(config.usage_bar_fill))
+                .markers(progress_markers(
+                    config.usage_bar_fill,
+                    config.warning_markers.then_some(threshold),
+                ))
                 .girth(if config.high_contrast { 8.0 } else { 4.0 })
                 .width(Length::Fill),
         )
@@ -188,12 +202,18 @@ fn reset_label(window: &Window, display: ResetDisplay) -> &str {
     .unwrap_or("Reset unavailable")
 }
 
-fn progress_markers(fill: UsageBarFill) -> Vec<f32> {
-    if fill == UsageBarFill::Segmented {
+fn progress_markers(fill: UsageBarFill, warning: Option<u8>) -> Vec<f32> {
+    let mut markers = if fill == UsageBarFill::Segmented {
         vec![0.25, 0.5, 0.75]
     } else {
         Vec::new()
+    };
+    if let Some(warning) = warning {
+        markers.push(f32::from(warning) / 100.0);
     }
+    markers.sort_by(f32::total_cmp);
+    markers.dedup();
+    markers
 }
 
 fn window_duration(minutes: u32) -> String {
@@ -225,7 +245,8 @@ mod tests {
             reset_label(&window, ResetDisplay::Clock),
             "2026-08-10T09:00:00Z"
         );
-        assert!(progress_markers(UsageBarFill::Solid).is_empty());
-        assert_eq!(progress_markers(UsageBarFill::Segmented).len(), 3);
+        assert!(progress_markers(UsageBarFill::Solid, None).is_empty());
+        assert_eq!(progress_markers(UsageBarFill::Segmented, None).len(), 3);
+        assert_eq!(progress_markers(UsageBarFill::Solid, Some(80)), vec![0.8]);
     }
 }

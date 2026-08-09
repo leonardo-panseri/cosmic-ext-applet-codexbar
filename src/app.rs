@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::codexbar::{self, ConfigDump, Provider, Snapshot, Window};
+use crate::alerts::{self, Coalescer};
+use crate::codexbar::{self, ConfigDump, HooksConfig, Provider, Snapshot, Window};
 use crate::config::{Config, IconStyle, RefreshInterval};
 use crate::fl;
 use crate::popup;
@@ -56,6 +57,9 @@ pub struct AppModel {
     refreshing: bool,
     /// Stable period used by the refresh subscription.
     refresh_period: Duration,
+    /// Baseline and coalescing state for edge-triggered alerts and hooks.
+    alert_state: Option<alerts::State>,
+    hook_coalescer: Coalescer,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -74,11 +78,18 @@ pub enum Message {
     SettingsClosed(Id),
     SettingsOpened,
     SelectSettingsPane(cosmic::widget::nav_bar::Id),
+    SelectNotificationProvider(usize),
     ProviderSearch(String),
     SelectProvider(String),
     SetProviderEnabled(String, bool),
     ProviderEnabled(Result<(String, bool), String>),
     ConfigDumpLoaded(Result<ConfigDump, String>),
+    HooksLoaded(Result<HooksConfig, String>),
+    SetHooksEnabled(bool),
+    HooksEnabled(Result<(), String>),
+    TestHook(String, String),
+    HookTested(Result<(), String>),
+    AlertsDelivered(Vec<String>),
     SignIn(String),
     SignInFinished(Result<(), String>),
     SettingsConfig(ConfigChange),
@@ -118,6 +129,46 @@ impl AppModel {
         })
     }
 
+    fn hooks_task() -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async {
+            Message::HooksLoaded(codexbar::hooks().await.map_err(|error| error.to_string()))
+        })
+    }
+
+    fn hooks_toggle_task(enabled: bool) -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async move {
+            Message::HooksEnabled(
+                codexbar::set_hooks_enabled(enabled)
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        })
+    }
+
+    fn hook_test_task(event: String, provider: String) -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async move {
+            Message::HookTested(
+                codexbar::test_hook(&event, &provider)
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        })
+    }
+
+    fn alerts_task(
+        notifications: Vec<alerts::Event>,
+        hook_events: Vec<alerts::Event>,
+        hooks: HooksConfig,
+        sound: bool,
+        hide_personal_info: bool,
+    ) -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async move {
+            Message::AlertsDelivered(
+                alerts::deliver(notifications, hook_events, hooks, sound, hide_personal_info).await,
+            )
+        })
+    }
+
     fn provider_toggle_task(provider: String, enabled: bool) -> Task<cosmic::Action<Message>> {
         cosmic::task::future(async move {
             Message::ProviderEnabled(
@@ -151,9 +202,12 @@ impl AppModel {
         true
     }
 
-    fn apply_snapshot_result(&mut self, result: Result<Vec<Snapshot>, String>) {
+    fn apply_snapshot_result(
+        &mut self,
+        result: Result<Vec<Snapshot>, String>,
+    ) -> Vec<alerts::Event> {
         self.refreshing = false;
-        match result {
+        let current = match result {
             Ok(mut snapshots) => {
                 for snapshot in snapshots
                     .iter_mut()
@@ -188,9 +242,20 @@ impl AppModel {
                     Timestamp::now(),
                 );
                 self.rebuild_provider_tabs();
+                alerts::State::loaded(self.snapshots.clone())
             }
-            Err(error) => self.refresh_error = Some(error),
-        }
+            Err(error) => {
+                self.refresh_error = Some(error.clone());
+                alerts::State::failed(error)
+            }
+        };
+        let events = alerts::diff(
+            self.alert_state.as_ref(),
+            &current,
+            &self.config.quota_thresholds,
+        );
+        self.alert_state = Some(current);
+        events
     }
 
     fn selected_snapshot(&self) -> Option<&Snapshot> {
@@ -472,6 +537,7 @@ impl cosmic::Application for AppModel {
                 Self::refresh_task(check_status),
                 Self::providers_task(),
                 Self::config_dump_task(),
+                Self::hooks_task(),
             ]),
         )
     }
@@ -616,7 +682,36 @@ impl cosmic::Application for AppModel {
                     return Self::refresh_task(self.config.check_provider_status);
                 }
             }
-            Message::SnapshotsLoaded(result) => self.apply_snapshot_result(result),
+            Message::SnapshotsLoaded(result) => {
+                let events = self.apply_snapshot_result(result);
+                if !events.is_empty() {
+                    let notifications = if self.config.notifications_enabled {
+                        events.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default();
+                    let hook_events = if self.settings.hooks.enabled {
+                        events
+                            .into_iter()
+                            .filter(|event| self.hook_coalescer.allow(event, now))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    if !notifications.is_empty() || !hook_events.is_empty() {
+                        return Self::alerts_task(
+                            notifications,
+                            hook_events,
+                            self.settings.hooks.clone(),
+                            self.config.notification_sound,
+                            self.config.hide_personal_info,
+                        );
+                    }
+                }
+            }
             Message::ProvidersLoaded(Ok(providers)) => {
                 self.providers = providers;
                 self.rebuild_provider_tabs();
@@ -713,6 +808,12 @@ impl cosmic::Application for AppModel {
             }
             Message::SettingsOpened => {}
             Message::SelectSettingsPane(id) => self.settings.select_pane(id),
+            Message::SelectNotificationProvider(index) => {
+                self.settings.notification_provider = index
+                    .checked_sub(1)
+                    .and_then(|index| self.providers.get(index))
+                    .map(|provider| provider.id.clone());
+            }
             Message::ProviderSearch(query) => self.settings.search = query,
             Message::SelectProvider(provider) => {
                 self.settings.selected_provider = Some(provider);
@@ -735,6 +836,25 @@ impl cosmic::Application for AppModel {
             Message::ProviderEnabled(Err(error)) => self.settings.error = Some(error),
             Message::ConfigDumpLoaded(Ok(dump)) => self.settings.dump = dump,
             Message::ConfigDumpLoaded(Err(error)) => self.settings.error = Some(error),
+            Message::HooksLoaded(Ok(hooks)) => self.settings.hooks = hooks,
+            Message::HooksLoaded(Err(error)) => self.settings.error = Some(error),
+            Message::SetHooksEnabled(enabled) => {
+                self.settings.error = None;
+                return Self::hooks_toggle_task(enabled);
+            }
+            Message::HooksEnabled(Ok(())) => return Self::hooks_task(),
+            Message::HooksEnabled(Err(error)) => self.settings.error = Some(error),
+            Message::TestHook(event, provider) => {
+                self.settings.error = None;
+                return Self::hook_test_task(event, provider);
+            }
+            Message::HookTested(Ok(())) => {}
+            Message::HookTested(Err(error)) => self.settings.error = Some(error),
+            Message::AlertsDelivered(errors) => {
+                if let Some(error) = errors.into_iter().next() {
+                    self.settings.error = Some(error);
+                }
+            }
             Message::SignIn(provider) => {
                 self.settings.error = None;
                 return Self::sign_in_task(provider);
@@ -781,7 +901,9 @@ impl cosmic::Application for AppModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codexbar::{Provider, ProviderError, Snapshot, Usage, Window};
+    use crate::codexbar::{
+        HookRule, HooksConfig, Provider, ProviderError, Snapshot, Usage, Window,
+    };
     use crate::config::RefreshInterval;
     use jiff::Timestamp;
 
@@ -902,7 +1024,7 @@ mod tests {
         ];
 
         let mut app = AppModel::default();
-        app.apply_snapshot_result(Ok(snapshots));
+        _ = app.apply_snapshot_result(Ok(snapshots));
 
         assert_eq!(
             app.selected_snapshot()
@@ -932,13 +1054,13 @@ mod tests {
     #[test]
     fn refresh_error_keeps_last_good_snapshot() {
         let mut app = AppModel::default();
-        app.apply_snapshot_result(Ok(vec![Snapshot {
+        _ = app.apply_snapshot_result(Ok(vec![Snapshot {
             provider: "codex".into(),
             ..Default::default()
         }]));
         assert!(app.begin_refresh());
 
-        app.apply_snapshot_result(Err("codexbar timed out after 30 seconds".into()));
+        _ = app.apply_snapshot_result(Err("codexbar timed out after 30 seconds".into()));
 
         assert_eq!(app.snapshots[0].provider, "codex");
         assert_eq!(
@@ -1022,7 +1144,7 @@ mod tests {
         };
         assert!(app.begin_refresh());
 
-        app.apply_snapshot_result(Ok(vec![Snapshot {
+        _ = app.apply_snapshot_result(Ok(vec![Snapshot {
             provider: "new".into(),
             ..Default::default()
         }]));
@@ -1043,7 +1165,7 @@ mod tests {
             ..Default::default()
         };
 
-        app.apply_snapshot_result(Ok(vec![Snapshot {
+        _ = app.apply_snapshot_result(Ok(vec![Snapshot {
             provider: "codex".into(),
             error: Some(ProviderError {
                 message: "network unavailable".into(),
@@ -1084,5 +1206,54 @@ mod tests {
         };
 
         assert_eq!(app.error_detail().as_deref(), Some("openai: token expired"));
+    }
+
+    #[test]
+    fn refresh_handler_diffs_previous_and_current_snapshots() {
+        let snapshot = |used_percent| Snapshot {
+            provider: "codex".into(),
+            usage: Some(Usage {
+                primary: Some(Window {
+                    used_percent,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut app = AppModel::default();
+        assert!(
+            app.apply_snapshot_result(Ok(vec![snapshot(79.0)]))
+                .is_empty()
+        );
+
+        let events = app.apply_snapshot_result(Ok(vec![snapshot(80.0)]));
+
+        assert_eq!(events[0].kind, alerts::EventKind::QuotaLow);
+    }
+
+    #[test]
+    fn hook_load_failure_preserves_last_known_rules() {
+        let mut app = AppModel::default();
+        let hooks = HooksConfig {
+            enabled: true,
+            events: vec![HookRule {
+                id: "warn".into(),
+                ..Default::default()
+            }],
+        };
+        drop(cosmic::Application::update(
+            &mut app,
+            Message::HooksLoaded(Ok(hooks)),
+        ));
+
+        drop(cosmic::Application::update(
+            &mut app,
+            Message::HooksLoaded(Err("codexbar unavailable".into())),
+        ));
+
+        assert!(app.settings.hooks.enabled);
+        assert_eq!(app.settings.hooks.events[0].id, "warn");
+        assert_eq!(app.settings.error.as_deref(), Some("codexbar unavailable"));
     }
 }
