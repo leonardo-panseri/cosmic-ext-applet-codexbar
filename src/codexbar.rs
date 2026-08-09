@@ -84,7 +84,27 @@ pub struct Snapshot {
     pub pace: Option<Pace>,
     pub credits: Option<Credits>,
     pub status: Option<Status>,
+    #[serde(alias = "storageUsage", alias = "storageFootprint")]
+    pub storage: Option<ProviderStorage>,
     pub error: Option<ProviderError>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ProviderStorage {
+    pub total_bytes: u64,
+    pub paths: Vec<String>,
+    pub missing_paths: Vec<String>,
+    pub unreadable_paths: Vec<String>,
+    pub components: Vec<StorageComponent>,
+    pub updated_at: Timestamp,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct StorageComponent {
+    pub path: String,
+    pub total_bytes: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -447,5 +467,17 @@ mod tests {
 
         let round_trip = serde_json::to_value(&snapshots).unwrap();
         assert_eq!(round_trip[0]["usage"]["secondary"]["usedPercent"], 42.5);
+    }
+
+    #[test]
+    fn deserializes_provider_storage_footprint() {
+        let snapshot: Snapshot = serde_json::from_str(
+            r#"{"provider":"codex","storage":{"totalBytes":1536,"paths":["/home/dev/.codex"],"components":[{"path":"/home/dev/.codex","totalBytes":1536}]}}"#,
+        )
+        .unwrap();
+
+        let storage = snapshot.storage.unwrap();
+        assert_eq!(storage.total_bytes, 1_536);
+        assert_eq!(storage.components[0].path, "/home/dev/.codex");
     }
 }

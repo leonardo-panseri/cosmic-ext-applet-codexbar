@@ -9,6 +9,7 @@ use tokio::process::Command;
 use crate::app::Message;
 use crate::config::SessionLabel;
 use crate::fl;
+use crate::privacy::{self, PRIVATE_VALUE};
 use cosmic::iced::Length;
 use cosmic::prelude::*;
 use cosmic::widget;
@@ -113,6 +114,10 @@ pub fn should_poll(popup_open: bool) -> bool {
     popup_open
 }
 
+fn display_label(session: &AgentSession, mode: SessionLabel, hide_personal_info: bool) -> String {
+    privacy::redact(&session.label(mode), hide_personal_info).to_owned()
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct TerminalLaunch {
     pub program: String,
@@ -199,7 +204,12 @@ pub fn local_host() -> String {
         .unwrap_or_else(|| "localhost".into())
 }
 
-pub fn view<'a>(state: &'a State, local_host: &'a str, mode: SessionLabel) -> Element<'a, Message> {
+pub fn view<'a>(
+    state: &'a State,
+    local_host: &'a str,
+    mode: SessionLabel,
+    hide_personal_info: bool,
+) -> Element<'a, Message> {
     let mut content = widget::column::with_capacity(state.sessions.len() + 3)
         .push(widget::text::heading(fl!("sessions-title")))
         .spacing(8);
@@ -213,6 +223,8 @@ pub fn view<'a>(state: &'a State, local_host: &'a str, mode: SessionLabel) -> El
     for group in grouped(&state.sessions, local_host) {
         content = content.push(widget::text::caption_heading(if group.local {
             fl!("sessions-local")
+        } else if hide_personal_info {
+            PRIVATE_VALUE.to_owned()
         } else {
             group.host.to_owned()
         }));
@@ -225,7 +237,7 @@ pub fn view<'a>(state: &'a State, local_host: &'a str, mode: SessionLabel) -> El
             let row = format!(
                 "{} {state_label} · {}",
                 if session.active() { "●" } else { "○" },
-                session.label(mode)
+                display_label(session, mode, hide_personal_info)
             );
             if group.local {
                 content = content.push(
@@ -307,6 +319,21 @@ mod tests {
         assert!(is_local_host("laptop.example.org", "laptop"));
         assert!(is_local_host("localhost", "laptop"));
         assert!(!is_local_host("desktop", "laptop"));
+    }
+
+    #[test]
+    fn privacy_redacts_session_labels_without_changing_launch_identity() {
+        let session = session("laptop", "secret-project", "Secret task", "active");
+
+        assert_eq!(
+            display_label(&session, SessionLabel::Descriptive, true),
+            PRIVATE_VALUE
+        );
+        assert_eq!(
+            display_label(&session, SessionLabel::Descriptive, false),
+            "Secret task"
+        );
+        assert_eq!(session.id, "laptop-secret-project");
     }
 
     #[test]

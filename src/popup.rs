@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::app::{Message, available_windows, snapshot_percent};
-use crate::codexbar::{Provider, Snapshot, Window};
+use crate::codexbar::{Identity, Provider, ProviderStorage, Snapshot, Window};
 use crate::config::{Config, PresentationLayout, ResetDisplay, UsageBarFill};
 use crate::fl;
+use crate::privacy;
 use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
 use cosmic::widget;
@@ -57,11 +58,12 @@ pub fn provider_card<'a>(
     content = content.push(header);
 
     if let Some(identity) = identity {
-        if !identity.account_email.is_empty() {
-            content = content.push(widget::text::body(&identity.account_email));
+        let [email, organization] = identity_lines(identity, config.hide_personal_info);
+        if !email.is_empty() {
+            content = content.push(widget::text::body(email));
         }
-        if !identity.account_organization.is_empty() {
-            content = content.push(widget::text::caption(&identity.account_organization));
+        if !organization.is_empty() {
+            content = content.push(widget::text::caption(organization));
         }
     }
 
@@ -94,6 +96,45 @@ pub fn provider_card<'a>(
         )));
     }
 
+    if let Some(storage) = visible_storage(snapshot, config.show_storage_usage) {
+        content = content.push(widget::text::body(format!(
+            "{} · {}",
+            fl!("provider-storage"),
+            format_bytes(storage.total_bytes)
+        )));
+        let rows = storage_rows(storage);
+        if !rows.is_empty() {
+            content = content.push(widget::text::caption(fl!("provider-storage-copy")));
+        }
+        for (path, bytes) in rows {
+            let label = bytes.map_or_else(
+                || privacy::redact(path, config.hide_personal_info).to_owned(),
+                |bytes| {
+                    format!(
+                        "{} · {}",
+                        privacy::redact(path, config.hide_personal_info),
+                        format_bytes(bytes)
+                    )
+                },
+            );
+            content = if config.hide_personal_info {
+                content.push(widget::text::caption(label))
+            } else {
+                content
+                    .push(widget::button::text(label).on_press(Message::CopyText(path.to_owned())))
+            };
+        }
+    }
+
+    if config.show_changelog_links
+        && let Some(url) = changelog_url(&snapshot.provider)
+    {
+        content = content.push(
+            widget::button::text(fl!("provider-changelog"))
+                .on_press(Message::OpenLink(url.to_owned())),
+        );
+    }
+
     if let Some(status) = &snapshot.status {
         let detail = if status.description.is_empty() {
             &status.indicator
@@ -117,6 +158,62 @@ pub fn provider_card<'a>(
         .padding(padding)
         .width(Length::Fill)
         .into()
+}
+
+fn identity_lines(identity: &Identity, hide_personal_info: bool) -> [&str; 2] {
+    [
+        privacy::redact(&identity.account_email, hide_personal_info),
+        privacy::redact(&identity.account_organization, hide_personal_info),
+    ]
+}
+
+fn visible_storage(snapshot: &Snapshot, enabled: bool) -> Option<&ProviderStorage> {
+    enabled.then_some(snapshot.storage.as_ref()).flatten()
+}
+
+fn storage_rows(storage: &ProviderStorage) -> Vec<(&str, Option<u64>)> {
+    if storage.components.is_empty() {
+        storage
+            .paths
+            .iter()
+            .map(|path| (path.as_str(), None))
+            .collect()
+    } else {
+        storage
+            .components
+            .iter()
+            .map(|component| (component.path.as_str(), Some(component.total_bytes)))
+            .collect()
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn changelog_url(provider: &str) -> Option<&'static str> {
+    match provider {
+        "codex" | "openai" => Some("https://developers.openai.com/codex/changelog"),
+        "claude" => Some("https://docs.anthropic.com/en/release-notes/overview"),
+        "cursor" => Some("https://cursor.com/changelog"),
+        "copilot" => Some("https://github.blog/changelog/label/copilot/"),
+        "gemini" => {
+            Some("https://developers.google.com/gemini-code-assist/resources/release-notes")
+        }
+        "kiro" => Some("https://kiro.dev/changelog/"),
+        _ => None,
+    }
 }
 
 pub fn overview<'a>(
@@ -231,6 +328,68 @@ fn window_duration(minutes: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codexbar::{Identity, ProviderStorage, StorageComponent};
+
+    #[test]
+    fn privacy_redacts_identity_without_mutating_it() {
+        let identity = Identity {
+            account_email: "dev@example.com".into(),
+            account_organization: "Secret Org".into(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            identity_lines(&identity, false),
+            ["dev@example.com", "Secret Org"]
+        );
+        assert_eq!(
+            identity_lines(&identity, true),
+            [crate::privacy::PRIVATE_VALUE, crate::privacy::PRIVATE_VALUE]
+        );
+        assert_eq!(identity.account_email, "dev@example.com");
+    }
+
+    #[test]
+    fn storage_is_only_displayed_when_enabled_and_present() {
+        let storage = ProviderStorage {
+            total_bytes: 1_536,
+            components: vec![StorageComponent {
+                path: "/home/dev/.codex".into(),
+                total_bytes: 1_536,
+            }],
+            ..Default::default()
+        };
+        let snapshot = Snapshot {
+            storage: Some(storage),
+            ..Default::default()
+        };
+
+        assert!(visible_storage(&snapshot, false).is_none());
+        assert_eq!(visible_storage(&snapshot, true).unwrap().total_bytes, 1_536);
+        assert_eq!(format_bytes(1_536), "1.5 KiB");
+    }
+
+    #[test]
+    fn storage_rows_fall_back_to_paths_without_components() {
+        let storage = ProviderStorage {
+            total_bytes: 42,
+            paths: vec!["/home/dev/.codex".into(), "/home/dev/.cache/codex".into()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            storage_rows(&storage),
+            vec![("/home/dev/.codex", None), ("/home/dev/.cache/codex", None)]
+        );
+    }
+
+    #[test]
+    fn known_changelog_urls_are_https() {
+        for provider in ["codex", "claude", "cursor", "copilot", "gemini", "kiro"] {
+            assert!(crate::settings::validated_https_url(changelog_url(provider).unwrap()).is_ok());
+        }
+        assert!(changelog_url("unknown").is_none());
+    }
 
     #[test]
     fn menu_presentation_changes_reset_and_fill_rendering() {

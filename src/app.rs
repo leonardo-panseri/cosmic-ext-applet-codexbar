@@ -80,6 +80,10 @@ pub enum Message {
     SelectTab(segmented_button::Entity),
     UpdateConfig(Config),
     CopyError,
+    CopyText(String),
+    CopyShortcutCommand,
+    OpenShortcutSettings,
+    ShortcutSettingsOpened(Result<(), String>),
     OpenSettings,
     CloseSettings,
     SettingsClosed(Id),
@@ -227,6 +231,12 @@ impl AppModel {
 
     fn open_link_task(url: String) -> Task<cosmic::Action<Message>> {
         cosmic::task::future(async move { Message::LinkOpened(settings::open_link(url).await) })
+    }
+
+    fn open_shortcut_settings_task() -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async {
+            Message::ShortcutSettingsOpened(settings::open_shortcut_settings().await)
+        })
     }
 
     fn begin_refresh(&mut self) -> bool {
@@ -519,7 +529,7 @@ impl cosmic::Application for AppModel {
     type Executor = cosmic::executor::Default;
 
     /// Data that your application receives to its init method.
-    type Flags = ();
+    type Flags = crate::Flags;
 
     /// Messages which the application and its widgets will emit.
     type Message = Message;
@@ -536,10 +546,7 @@ impl cosmic::Application for AppModel {
     }
 
     /// Initializes the application with any given flags and startup commands.
-    fn init(
-        core: cosmic::Core,
-        _flags: Self::Flags,
-    ) -> (Self, Task<cosmic::Action<Self::Message>>) {
+    fn init(core: cosmic::Core, flags: Self::Flags) -> (Self, Task<cosmic::Action<Self::Message>>) {
         // Construct the app model with the runtime's core.
         let mut app = AppModel {
             core,
@@ -568,15 +575,16 @@ impl cosmic::Application for AppModel {
         );
 
         let check_status = app.config.check_provider_status;
-        (
-            app,
-            Task::batch([
-                Self::refresh_task(check_status),
-                Self::providers_task(),
-                Self::config_dump_task(),
-                Self::hooks_task(),
-            ]),
-        )
+        let mut tasks = vec![
+            Self::refresh_task(check_status),
+            Self::providers_task(),
+            Self::config_dump_task(),
+            Self::hooks_task(),
+        ];
+        if flags.open_popup {
+            tasks.push(Task::done(cosmic::Action::App(Message::TogglePopup)));
+        }
+        (app, Task::batch(tasks))
     }
 
     fn on_close_requested(&self, id: Id) -> Option<Message> {
@@ -685,6 +693,7 @@ impl cosmic::Application for AppModel {
                 &self.sessions,
                 &self.local_host,
                 self.config.session_label,
+                self.config.hide_personal_info,
             ))
             .push(widget::divider::horizontal::light())
             .push(widget::button::text(fl!("settings")).on_press(Message::OpenSettings));
@@ -810,6 +819,13 @@ impl cosmic::Application for AppModel {
                     return clipboard::write(error);
                 }
             }
+            Message::CopyText(value) => return clipboard::write(value),
+            Message::CopyShortcutCommand => {
+                return clipboard::write(settings::shortcut_command());
+            }
+            Message::OpenShortcutSettings => return Self::open_shortcut_settings_task(),
+            Message::ShortcutSettingsOpened(Ok(())) => {}
+            Message::ShortcutSettingsOpened(Err(error)) => self.settings.error = Some(error),
             Message::TogglePopup => {
                 return if let Some(p) = self.popup.take() {
                     destroy_popup(p)

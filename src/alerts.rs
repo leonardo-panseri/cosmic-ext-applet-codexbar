@@ -155,10 +155,8 @@ pub async fn deliver(
         }
     }
     if hooks.enabled {
-        for mut event in hook_events {
-            if hide_personal_info {
-                event.account = None;
-            }
+        for event in hook_events {
+            let mut event = redact_hook_event(&event, hide_personal_info);
             event
                 .timestamp
                 .get_or_insert_with(|| jiff::Timestamp::now().to_string());
@@ -211,7 +209,7 @@ async fn notify(event: &Event, sound: bool) -> Result<(), String> {
 
 async fn run_hooks(event: &Event, rules: &[crate::codexbar::HookRule]) -> Result<(), String> {
     let rules = eligible_rules(rules, event)?;
-    let payload = serde_json::to_vec(event).map_err(|error| error.to_string())?;
+    let payload = hook_payload(event, false)?;
     if payload.len() > MAX_PAYLOAD_BYTES {
         return Err("hook payload exceeds 64 KiB".into());
     }
@@ -226,6 +224,19 @@ async fn run_hooks(event: &Event, rules: &[crate::codexbar::HookRule]) -> Result
     } else {
         Err(errors.join("; "))
     }
+}
+
+fn redact_hook_event(event: &Event, hide_personal_info: bool) -> Event {
+    let mut event = event.clone();
+    if hide_personal_info {
+        event.account = None;
+    }
+    event
+}
+
+fn hook_payload(event: &Event, hide_personal_info: bool) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(&redact_hook_event(event, hide_personal_info))
+        .map_err(|error| error.to_string())
 }
 
 async fn run_hook(
@@ -605,6 +616,33 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn privacy_redacts_hook_payload_without_touching_source_event() {
+        let event = Event {
+            kind: EventKind::QuotaLow,
+            provider: "codex".into(),
+            window: Some("primary".into()),
+            used_percent: Some(80.0),
+            used: None,
+            limit: None,
+            threshold: Some(80),
+            resets_at: None,
+            status: None,
+            message: None,
+            account: Some("dev@example.com".into()),
+            timestamp: None,
+        };
+
+        let payload = hook_payload(&event, true).unwrap();
+
+        assert!(
+            !String::from_utf8(payload)
+                .unwrap()
+                .contains("dev@example.com")
+        );
+        assert_eq!(event.account.as_deref(), Some("dev@example.com"));
     }
 
     #[test]

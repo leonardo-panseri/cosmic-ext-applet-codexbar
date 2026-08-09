@@ -114,7 +114,7 @@ impl RefreshInterval {
 }
 
 #[derive(Debug, Clone, CosmicConfigEntry, Eq, PartialEq, Serialize, Deserialize)]
-#[version = 7]
+#[version = 8]
 pub struct Config {
     pub icon_style: IconStyle,
     pub refresh_interval: RefreshInterval,
@@ -139,6 +139,7 @@ pub struct Config {
     pub cost_summary_days: u16,
     pub hide_personal_info: bool,
     pub show_storage_usage: bool,
+    pub show_changelog_links: bool,
     pub show_debug_settings: bool,
 }
 
@@ -168,6 +169,7 @@ impl Default for Config {
             cost_summary_days: 7,
             hide_personal_info: false,
             show_storage_usage: false,
+            show_changelog_links: false,
             show_debug_settings: false,
         }
     }

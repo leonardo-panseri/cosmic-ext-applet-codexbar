@@ -11,6 +11,8 @@ use cosmic::iced::Length;
 use cosmic::prelude::*;
 use cosmic::widget::{self, nav_bar, settings, toggler};
 use std::path::PathBuf;
+use tokio::process::Command;
+use url::Url;
 
 const PROJECT_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const UPSTREAM_URL: &str = "https://github.com/steipete/CodexBar";
@@ -119,6 +121,7 @@ pub enum ConfigChange {
     CostSummaryDays(usize),
     HidePersonalInfo(bool),
     ShowStorageUsage(bool),
+    ShowChangelogLinks(bool),
     ShowDebug(bool),
     OverviewProvider(String, bool),
     NotificationsEnabled(bool),
@@ -184,6 +187,7 @@ impl ConfigChange {
             Self::CostSummaryDays(index) => config.cost_summary_days = [7, 30][index.min(1)],
             Self::HidePersonalInfo(value) => config.hide_personal_info = value,
             Self::ShowStorageUsage(value) => config.show_storage_usage = value,
+            Self::ShowChangelogLinks(value) => config.show_changelog_links = value,
             Self::ShowDebug(value) => config.show_debug_settings = value,
             Self::OverviewProvider(provider, selected) => {
                 config.overview_providers.retain(|item| item != &provider);
@@ -238,14 +242,46 @@ pub fn sync_autostart(enabled: bool) -> Result<(), String> {
 }
 
 pub async fn open_link(url: String) -> Result<(), String> {
-    if !url.starts_with("https://") {
-        return Err("only HTTPS links can be opened".into());
-    }
-    tokio::process::Command::new("xdg-open")
+    let url = validated_https_url(&url)?;
+    Command::new("xdg-open")
         .arg(&url)
         .spawn()
         .map(drop)
         .map_err(|error| format!("failed to open {url}: {error}"))
+}
+
+pub fn validated_https_url(value: &str) -> Result<String, String> {
+    let url = Url::parse(value).map_err(|_| "link is not a valid URL".to_owned())?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err("only HTTPS links can be opened".into());
+    }
+    Ok(url.into())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ShortcutRoute {
+    pub program: &'static str,
+    pub args: &'static [&'static str],
+}
+
+pub fn shortcut_route() -> ShortcutRoute {
+    ShortcutRoute {
+        program: "cosmic-settings",
+        args: &["keyboard"],
+    }
+}
+
+pub fn shortcut_command() -> String {
+    format!("{} --open-popup", env!("CARGO_PKG_NAME"))
+}
+
+pub async fn open_shortcut_settings() -> Result<(), String> {
+    let route = shortcut_route();
+    Command::new(route.program)
+        .args(route.args)
+        .spawn()
+        .map(drop)
+        .map_err(|error| format!("failed to open COSMIC keyboard settings: {error}"))
 }
 
 fn autostart_entry() -> String {
@@ -365,6 +401,25 @@ fn general(config: &Config) -> Element<'_, Message> {
             ))
             .into(),
         settings::section()
+            .title(fl!("settings-open-menu-shortcut"))
+            .add(settings::item(
+                fl!("settings-shortcut-command"),
+                widget::text(shortcut_command()),
+            ))
+            .add(settings::item_row(vec![
+                widget::button::standard(fl!("settings-copy-shortcut"))
+                    .on_press(Message::CopyShortcutCommand)
+                    .into(),
+                widget::button::standard(fl!("settings-configure-shortcut"))
+                    .on_press(Message::OpenShortcutSettings)
+                    .into(),
+            ]))
+            .add(settings::item(
+                fl!("settings-shortcut-note"),
+                widget::text(fl!("settings-shortcut-limitation")),
+            ))
+            .into(),
+        settings::section()
             .add(settings::item_row(vec![
                 widget::button::destructive(fl!("settings-quit"))
                     .on_press(Message::Quit)
@@ -475,6 +530,12 @@ fn menu(config: &Config) -> Element<'_, Message> {
                     Some(usize::from(config.cost_summary_days > 7)),
                     |index| Message::SettingsConfig(ConfigChange::CostSummaryDays(index)),
                 ),
+            ))
+            .add(settings::item(
+                fl!("settings-show-changelog"),
+                toggler(config.show_changelog_links).on_toggle(|value| {
+                    Message::SettingsConfig(ConfigChange::ShowChangelogLinks(value))
+                }),
             ))
             .into(),
     ])
@@ -647,13 +708,38 @@ fn threshold_index(value: u8) -> usize {
         .unwrap_or(2)
 }
 
+fn build_metadata() -> String {
+    format!(
+        "{} · {}",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        std::env::consts::ARCH
+    )
+}
+
 fn about() -> Element<'static, Message> {
     settings::view_column(vec![
         widget::text::title3(fl!("settings-about")).into(),
+        widget::text::body(fl!("about-description")).into(),
         settings::section()
             .add(settings::item(
                 fl!("settings-version"),
                 widget::text(env!("CARGO_PKG_VERSION")),
+            ))
+            .add(settings::item(
+                fl!("settings-build"),
+                widget::text(build_metadata()),
+            ))
+            .add(settings::item(
+                fl!("settings-license"),
+                widget::text("MPL-2.0"),
+            ))
+            .add(settings::item(
+                fl!("settings-credits"),
+                widget::text(fl!("about-credits")),
             ))
             .add(settings::item(
                 fl!("settings-source"),
@@ -872,6 +958,40 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_route_targets_cosmic_keyboard_settings_and_documents_invocation() {
+        let route = shortcut_route();
+
+        assert_eq!(route.program, "cosmic-settings");
+        assert_eq!(route.args, ["keyboard"]);
+        assert_eq!(
+            shortcut_command(),
+            "cosmic-ext-applet-codexbar --open-popup"
+        );
+    }
+
+    #[test]
+    fn link_validation_accepts_https_and_rejects_other_schemes() {
+        assert_eq!(
+            validated_https_url("https://example.com/changelog").unwrap(),
+            "https://example.com/changelog"
+        );
+        assert!(validated_https_url("http://example.com/changelog").is_err());
+        assert!(validated_https_url("not a URL").is_err());
+    }
+
+    #[test]
+    fn about_build_metadata_reports_profile_and_architecture() {
+        let metadata = build_metadata();
+
+        assert!(metadata.starts_with(if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }));
+        assert!(metadata.ends_with(std::env::consts::ARCH));
+    }
+
+    #[test]
     fn presentation_controls_update_the_live_card_config() {
         let mut config = Config::default();
         for change in [
@@ -882,6 +1002,7 @@ mod tests {
             ConfigChange::ResetDisplay(1),
             ConfigChange::SessionLabel(2),
             ConfigChange::ShowCredits(false),
+            ConfigChange::ShowChangelogLinks(true),
             ConfigChange::NotificationsEnabled(false),
             ConfigChange::NotificationSound(false),
             ConfigChange::QuotaThreshold(None, 0, 4),
@@ -897,6 +1018,7 @@ mod tests {
         assert_eq!(config.reset_display, ResetDisplay::Clock);
         assert_eq!(config.session_label, SessionLabel::DescriptiveProject);
         assert!(!config.show_credits);
+        assert!(config.show_changelog_links);
         assert!(!config.notifications_enabled);
         assert!(!config.notification_sound);
         assert_eq!(config.quota_thresholds.defaults.primary, 90);
