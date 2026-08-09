@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::codexbar::{self, Snapshot, Window};
-use crate::config::{Config, IconStyle};
+use crate::config::{Config, IconStyle, RefreshInterval};
 use crate::fl;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
@@ -14,6 +14,8 @@ use cosmic::iced::{
 };
 use cosmic::prelude::*;
 use cosmic::widget;
+use jiff::Timestamp;
+use std::time::Duration;
 
 /// The application model stores app-specific state used to describe its interface and
 /// drive its logic.
@@ -29,6 +31,10 @@ pub struct AppModel {
     snapshots: Vec<Snapshot>,
     /// The latest refresh failure; snapshots remain visible while this is set.
     refresh_error: Option<String>,
+    /// Whether a usage request is currently running.
+    refreshing: bool,
+    /// Stable period used by the refresh subscription.
+    refresh_period: Duration,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -36,17 +42,58 @@ pub struct AppModel {
 pub enum Message {
     TogglePopup,
     PopupClosed(Id),
+    RefreshRequested,
     SnapshotsLoaded(Result<Vec<Snapshot>, String>),
     UpdateConfig(Config),
     CopyError,
 }
 
 impl AppModel {
+    fn refresh_task() -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async {
+            Message::SnapshotsLoaded(
+                codexbar::usage_snapshot()
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        })
+    }
+
+    fn begin_refresh(&mut self) -> bool {
+        if self.refreshing {
+            return false;
+        }
+        self.refreshing = true;
+        true
+    }
+
     fn apply_snapshot_result(&mut self, result: Result<Vec<Snapshot>, String>) {
+        self.refreshing = false;
         match result {
-            Ok(snapshots) => {
+            Ok(mut snapshots) => {
+                for snapshot in snapshots
+                    .iter_mut()
+                    .filter(|snapshot| snapshot.usage.is_none())
+                {
+                    let Some(error) = snapshot.error.take() else {
+                        continue;
+                    };
+                    if let Some(previous) = self
+                        .snapshots
+                        .iter()
+                        .find(|previous| previous.provider == snapshot.provider)
+                    {
+                        *snapshot = previous.clone();
+                    }
+                    snapshot.error = Some(error);
+                }
                 self.snapshots = snapshots;
                 self.refresh_error = None;
+                self.refresh_period = refresh_period(
+                    self.config.refresh_interval,
+                    &self.snapshots,
+                    Timestamp::now(),
+                );
             }
             Err(error) => self.refresh_error = Some(error),
         }
@@ -91,7 +138,7 @@ impl AppModel {
             &snapshot.provider
         };
 
-        let mut header = widget::row::with_capacity(3)
+        let mut header = widget::row::with_capacity(4)
             .push(widget::text::heading(provider))
             .push(widget::space::horizontal())
             .align_y(Alignment::Center);
@@ -102,6 +149,14 @@ impl AppModel {
             header =
                 header.push(widget::container(widget::text::caption_heading(plan)).padding([4, 8]));
         }
+        header = header.push(
+            widget::button::text(if self.refreshing {
+                fl!("refreshing-usage")
+            } else {
+                fl!("refresh-usage")
+            })
+            .on_press_maybe((!self.refreshing).then_some(Message::RefreshRequested)),
+        );
         content = content.push(header);
 
         if let Some(identity) = identity {
@@ -162,7 +217,7 @@ impl AppModel {
     fn panel_button(&self, label: Option<String>, has_error: bool) -> Element<'_, Message> {
         let (icon_width, icon_height) = self.core.applet.suggested_size(true);
         let icon = indicator_icon(has_error, icon_width);
-        let Some(label) = label else {
+        if label.is_none() && !self.refreshing {
             return self
                 .core
                 .applet
@@ -177,9 +232,14 @@ impl AppModel {
         } else {
             (minor_padding, major_padding)
         };
+        let value: Element<'_, Message> = if self.refreshing {
+            widget::indeterminate_circular().size(16.0).into()
+        } else {
+            widget::text(label.unwrap_or_default()).into()
+        };
         let content = widget::row::with_capacity(2)
             .push(icon)
-            .push(widget::text(label))
+            .push(value)
             .align_y(Alignment::Center)
             .spacing(4);
 
@@ -233,6 +293,24 @@ fn snapshot_percent(snapshot: &Snapshot) -> f32 {
         .map(|(_, window)| window.used_percent)
         .max_by(f32::total_cmp)
         .unwrap_or_default()
+}
+
+fn refresh_period(interval: RefreshInterval, snapshots: &[Snapshot], now: Timestamp) -> Duration {
+    if let Some(minutes) = interval.fixed_minutes() {
+        return Duration::from_secs(minutes * 60);
+    }
+
+    let seconds = snapshots
+        .iter()
+        .flat_map(available_windows)
+        .filter_map(|(_, window)| window.resets_at.as_deref())
+        .filter_map(|reset| reset.parse::<Timestamp>().ok())
+        .map(|reset| now.duration_until(reset).as_secs())
+        .filter(|seconds| *seconds > 0)
+        .min()
+        .unwrap_or(300)
+        .max(60);
+    Duration::from_secs(seconds as u64)
 }
 
 fn window_row(label: &'static str, window: &Window) -> Element<'static, Message> {
@@ -300,7 +378,7 @@ impl cosmic::Application for AppModel {
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
         // Construct the app model with the runtime's core.
-        let app = AppModel {
+        let mut app = AppModel {
             core,
             config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
                 .map(|context| match Config::get_entry(&context) {
@@ -314,19 +392,16 @@ impl cosmic::Application for AppModel {
                     }
                 })
                 .unwrap_or_default(),
+            refreshing: true,
             ..Default::default()
         };
+        app.refresh_period = refresh_period(
+            app.config.refresh_interval,
+            &app.snapshots,
+            Timestamp::now(),
+        );
 
-        (
-            app,
-            cosmic::task::future(async {
-                Message::SnapshotsLoaded(
-                    codexbar::usage_snapshot()
-                        .await
-                        .map_err(|error| error.to_string()),
-                )
-            }),
-        )
+        (app, Self::refresh_task())
     }
 
     fn on_close_requested(&self, id: Id) -> Option<Message> {
@@ -405,6 +480,7 @@ impl cosmic::Application for AppModel {
 
                     Message::UpdateConfig(update.config)
                 }),
+            cosmic::iced::time::every(self.refresh_period).map(|_| Message::RefreshRequested),
         ])
     }
 
@@ -415,9 +491,19 @@ impl cosmic::Application for AppModel {
     /// tasks are finished.
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
+            Message::RefreshRequested => {
+                if self.begin_refresh() {
+                    return Self::refresh_task();
+                }
+            }
             Message::SnapshotsLoaded(result) => self.apply_snapshot_result(result),
             Message::UpdateConfig(config) => {
                 self.config = config;
+                self.refresh_period = refresh_period(
+                    self.config.refresh_interval,
+                    &self.snapshots,
+                    Timestamp::now(),
+                );
             }
             Message::CopyError => {
                 if let Some(error) = self.error_detail() {
@@ -442,7 +528,12 @@ impl cosmic::Application for AppModel {
                         .min_width(300.0)
                         .min_height(200.0)
                         .max_height(1080.0);
-                    get_popup(popup_settings)
+                    let popup = get_popup(popup_settings);
+                    if self.config.refresh_on_popup_open && self.begin_refresh() {
+                        Task::batch([popup, Self::refresh_task()])
+                    } else {
+                        popup
+                    }
                 };
             }
             Message::PopupClosed(id) => {
@@ -463,6 +554,8 @@ impl cosmic::Application for AppModel {
 mod tests {
     use super::*;
     use crate::codexbar::{ProviderError, Snapshot, Usage, Window};
+    use crate::config::RefreshInterval;
+    use jiff::Timestamp;
 
     #[test]
     fn unavailable_windows_are_omitted() {
@@ -489,31 +582,152 @@ mod tests {
             provider: "codex".into(),
             ..Default::default()
         }]));
+        assert!(app.begin_refresh());
 
-        app.apply_snapshot_result(Err("network unavailable".into()));
+        app.apply_snapshot_result(Err("codexbar timed out after 30 seconds".into()));
 
         assert_eq!(app.snapshots[0].provider, "codex");
-        assert_eq!(app.refresh_error.as_deref(), Some("network unavailable"));
+        assert_eq!(
+            app.refresh_error.as_deref(),
+            Some("codexbar timed out after 30 seconds")
+        );
+        assert!(!app.refreshing);
+    }
+
+    #[test]
+    fn concurrent_refresh_is_ignored() {
+        let mut app = AppModel::default();
+
+        assert!(app.begin_refresh());
+        assert!(!app.begin_refresh());
+    }
+
+    #[test]
+    fn adaptive_refresh_has_a_one_minute_floor() {
+        let snapshot = Snapshot {
+            usage: Some(Usage {
+                primary: Some(Window {
+                    resets_at: Some("2026-08-09T10:00:30Z".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            refresh_period(
+                RefreshInterval::Adaptive,
+                &[snapshot],
+                "2026-08-09T10:00:00Z".parse::<Timestamp>().unwrap()
+            ),
+            std::time::Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn adaptive_refresh_uses_the_nearest_reset() {
+        let snapshot = Snapshot {
+            usage: Some(Usage {
+                primary: Some(Window {
+                    resets_at: Some("2026-08-09T12:00:00Z".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            refresh_period(
+                RefreshInterval::Adaptive,
+                &[snapshot],
+                "2026-08-09T10:00:00Z".parse::<Timestamp>().unwrap()
+            ),
+            std::time::Duration::from_secs(2 * 60 * 60)
+        );
+    }
+
+    #[test]
+    fn fixed_refresh_uses_configured_interval() {
+        assert_eq!(
+            refresh_period(RefreshInterval::FifteenMinutes, &[], Timestamp::UNIX_EPOCH),
+            std::time::Duration::from_secs(15 * 60)
+        );
+    }
+
+    #[test]
+    fn successful_refresh_replaces_snapshot_and_settles_loading() {
+        let mut app = AppModel {
+            snapshots: vec![Snapshot {
+                provider: "old".into(),
+                ..Default::default()
+            }],
+            refresh_error: Some("old failure".into()),
+            ..Default::default()
+        };
+        assert!(app.begin_refresh());
+
+        app.apply_snapshot_result(Ok(vec![Snapshot {
+            provider: "new".into(),
+            ..Default::default()
+        }]));
+
+        assert_eq!(app.snapshots[0].provider, "new");
+        assert!(app.refresh_error.is_none());
+        assert!(!app.refreshing);
+    }
+
+    #[test]
+    fn provider_failure_keeps_its_last_good_usage() {
+        let mut app = AppModel {
+            snapshots: vec![Snapshot {
+                provider: "codex".into(),
+                usage: Some(Usage::default()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        app.apply_snapshot_result(Ok(vec![Snapshot {
+            provider: "codex".into(),
+            error: Some(ProviderError {
+                message: "network unavailable".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]));
+
+        assert!(app.snapshots[0].usage.is_some());
+        assert_eq!(
+            app.snapshots[0]
+                .error
+                .as_ref()
+                .map(|error| error.message.as_str()),
+            Some("network unavailable")
+        );
     }
 
     #[test]
     fn error_from_another_provider_marks_the_merged_indicator() {
-        let mut app = AppModel::default();
-        app.snapshots = vec![
-            Snapshot {
-                provider: "codex".into(),
-                usage: Some(Usage::default()),
-                ..Default::default()
-            },
-            Snapshot {
-                provider: "openai".into(),
-                error: Some(ProviderError {
-                    message: "token expired".into(),
+        let app = AppModel {
+            snapshots: vec![
+                Snapshot {
+                    provider: "codex".into(),
+                    usage: Some(Usage::default()),
                     ..Default::default()
-                }),
-                ..Default::default()
-            },
-        ];
+                },
+                Snapshot {
+                    provider: "openai".into(),
+                    error: Some(ProviderError {
+                        message: "token expired".into(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
 
         assert_eq!(app.error_detail().as_deref(), Some("openai: token expired"));
     }

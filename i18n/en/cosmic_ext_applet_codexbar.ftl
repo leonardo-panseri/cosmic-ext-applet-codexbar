@@ -5,5 +5,7 @@ welcome = Welcome to COSMIC! ✨
 page-id = Page { $num }
 git-description = Git commit {$hash} on {$date}
 loading-usage = Loading usage…
+refresh-usage = Refresh
+refreshing-usage = Refreshing…
 copy-error = Copy error
 refresh-error = Usage data may be stale
