@@ -5,7 +5,7 @@ use crate::codexbar::{ConfigDump, HooksConfig, Provider, Snapshot};
 use crate::config::{
     Config, IconStyle, PresentationLayout, RefreshInterval, ResetDisplay, UsageBarFill,
 };
-use crate::{fl, popup};
+use crate::{fl, popup, spend};
 use cosmic::iced::Length;
 use cosmic::prelude::*;
 use cosmic::widget::{self, nav_bar, settings, toggler};
@@ -35,6 +35,7 @@ pub fn filtered_providers<'a>(providers: &'a [Provider], query: &str) -> Vec<&'a
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Pane {
     General,
+    UsageSpend,
     MenuBar,
     Menu,
     Notifications,
@@ -59,6 +60,7 @@ impl Default for State {
         let mut nav = nav_bar::Model::default();
         for (title, pane) in [
             (fl!("settings-general"), Pane::General),
+            (fl!("settings-usage-spend"), Pane::UsageSpend),
             (fl!("settings-menu-bar"), Pane::MenuBar),
             (fl!("settings-menu"), Pane::Menu),
             (fl!("settings-notifications"), Pane::Notifications),
@@ -246,6 +248,7 @@ fn autostart_entry() -> String {
 
 pub fn view<'a>(
     state: &'a State,
+    spend_state: &'a spend::State,
     config: &'a Config,
     providers: &'a [Provider],
     snapshots: &'a [Snapshot],
@@ -254,6 +257,7 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     let page = match state.pane() {
         Pane::General => general(config),
+        Pane::UsageSpend => spend::view(spend_state),
         Pane::MenuBar => menu_bar(config, providers),
         Pane::Menu => menu(config),
         Pane::Notifications => notifications(state, config, providers),

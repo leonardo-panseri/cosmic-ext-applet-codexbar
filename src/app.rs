@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::alerts::{self, Coalescer};
-use crate::codexbar::{self, ConfigDump, HooksConfig, Provider, Snapshot, Window};
+use crate::codexbar::{self, ConfigDump, CostReport, HooksConfig, Provider, Snapshot, Window};
 use crate::config::{Config, IconStyle, RefreshInterval};
 use crate::fl;
 use crate::popup;
 use crate::settings::{self, ConfigChange};
+use crate::spend;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
 use cosmic::iced::{
@@ -60,6 +61,8 @@ pub struct AppModel {
     /// Baseline and coalescing state for edge-triggered alerts and hooks.
     alert_state: Option<alerts::State>,
     hook_coalescer: Coalescer,
+    /// Last-good cost dashboard and its independent refresh state.
+    spend: spend::State,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -93,6 +96,10 @@ pub enum Message {
     SignIn(String),
     SignInFinished(Result<(), String>),
     SettingsConfig(ConfigChange),
+    SelectSpendRange(segmented_button::Entity),
+    RefreshSpend,
+    SpendLoaded(u16, Result<Vec<CostReport>, String>),
+    SpendDayTick(String),
     OpenLink(String),
     LinkOpened(Result<(), String>),
     Quit,
@@ -113,6 +120,17 @@ impl AppModel {
         cosmic::task::future(async {
             Message::ProvidersLoaded(
                 codexbar::providers()
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        })
+    }
+
+    fn spend_task(days: u16) -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async move {
+            Message::SpendLoaded(
+                days,
+                codexbar::cost(days)
                     .await
                     .map_err(|error| error.to_string()),
             )
@@ -524,6 +542,7 @@ impl cosmic::Application for AppModel {
             ..Default::default()
         };
         app.config.normalize();
+        app.spend.set_days(app.config.cost_summary_days);
         app.refresh_period = refresh_period(
             app.config.refresh_interval,
             &app.snapshots,
@@ -584,6 +603,7 @@ impl cosmic::Application for AppModel {
         if self.settings_window == Some(id) {
             return settings::view(
                 &self.settings,
+                &self.spend,
                 &self.config,
                 &self.providers,
                 &self.snapshots,
@@ -655,7 +675,7 @@ impl cosmic::Application for AppModel {
     /// activated by selectively appending to the subscription batch, and will
     /// continue to execute for the duration that they remain in the batch.
     fn subscription(&self) -> Subscription<Self::Message> {
-        Subscription::batch(vec![
+        let mut subscriptions = vec![
             // Watch for application configuration changes.
             self.core()
                 .watch_config::<Config>(Self::APP_ID)
@@ -667,7 +687,14 @@ impl cosmic::Application for AppModel {
                     Message::UpdateConfig(update.config)
                 }),
             cosmic::iced::time::every(self.refresh_period).map(|_| Message::RefreshRequested),
-        ])
+        ];
+        if self.settings_window.is_some() {
+            subscriptions.push(
+                cosmic::iced::time::every(Duration::from_secs(60))
+                    .map(|_| Message::SpendDayTick(spend::current_day())),
+            );
+        }
+        Subscription::batch(subscriptions)
     }
 
     /// Handles messages emitted by the application and its widgets.
@@ -725,6 +752,7 @@ impl cosmic::Application for AppModel {
                 self.provider_tabs.activate(id);
             }
             Message::UpdateConfig(mut config) => {
+                let old_cost_days = self.config.cost_summary_days;
                 config.normalize();
                 self.config = config;
                 if self.config.overview_providers.is_empty()
@@ -738,6 +766,14 @@ impl cosmic::Application for AppModel {
                     &self.snapshots,
                     Timestamp::now(),
                 );
+                if old_cost_days != self.config.cost_summary_days {
+                    self.spend.set_days(self.config.cost_summary_days);
+                    if self.settings_window.is_some()
+                        && self.spend.request_refresh(&spend::current_day())
+                    {
+                        return Self::spend_task(self.spend.days);
+                    }
+                }
             }
             Message::CopyError => {
                 if let Some(error) = self.error_detail() {
@@ -789,11 +825,14 @@ impl cosmic::Application for AppModel {
                 self.settings_window = Some(id);
                 _ = self.set_window_title(fl!("settings-title"), id);
                 let open = open.map(|_| cosmic::Action::App(Message::SettingsOpened));
-                return if let Some(popup) = self.popup.take() {
-                    Task::batch([destroy_popup(popup), open])
-                } else {
-                    open
-                };
+                let mut tasks = vec![open];
+                if let Some(popup) = self.popup.take() {
+                    tasks.push(destroy_popup(popup));
+                }
+                if self.spend.request_refresh(&spend::current_day()) {
+                    tasks.push(Self::spend_task(self.spend.days));
+                }
+                return Task::batch(tasks);
             }
             Message::CloseSettings => {
                 if let Some(id) = self.settings_window.take() {
@@ -862,6 +901,7 @@ impl cosmic::Application for AppModel {
             Message::SignInFinished(Ok(())) => {}
             Message::SignInFinished(Err(error)) => self.settings.error = Some(error),
             Message::SettingsConfig(change) => {
+                let old_cost_days = self.config.cost_summary_days;
                 let launch_at_login = change.launch_at_login();
                 if let Some(enabled) = launch_at_login
                     && let Err(error) = settings::sync_autostart(enabled)
@@ -884,6 +924,39 @@ impl cosmic::Application for AppModel {
                     &self.snapshots,
                     Timestamp::now(),
                 );
+                if old_cost_days != self.config.cost_summary_days {
+                    self.spend.set_days(self.config.cost_summary_days);
+                    if self.settings_window.is_some()
+                        && self.spend.request_refresh(&spend::current_day())
+                    {
+                        return Self::spend_task(self.spend.days);
+                    }
+                }
+            }
+            Message::SelectSpendRange(id) => {
+                if self.spend.select_range(id) {
+                    let index = usize::from(self.spend.days > 7);
+                    return cosmic::task::message(cosmic::Action::App(Message::SettingsConfig(
+                        ConfigChange::CostSummaryDays(index),
+                    )));
+                }
+            }
+            Message::RefreshSpend => {
+                if self.spend.request_refresh(&spend::current_day()) {
+                    return Self::spend_task(self.spend.days);
+                }
+            }
+            Message::SpendLoaded(days, result) => {
+                let range_changed = days != self.spend.days;
+                self.spend.finish(days, result);
+                if range_changed && self.spend.request_refresh(&spend::current_day()) {
+                    return Self::spend_task(self.spend.days);
+                }
+            }
+            Message::SpendDayTick(day) => {
+                if self.spend.refresh_for_day(&day) {
+                    return Self::spend_task(self.spend.days);
+                }
             }
             Message::OpenLink(url) => return Self::open_link_task(url),
             Message::LinkOpened(Ok(())) => {}

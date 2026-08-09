@@ -158,6 +158,39 @@ pub struct ProviderError {
     pub message: String,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CostReport {
+    pub provider: String,
+    pub currency_code: String,
+    pub history_days: u16,
+    pub daily: Vec<CostDaily>,
+    pub model_breakdowns: Vec<CostModel>,
+    pub totals: CostTotals,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CostDaily {
+    pub date: String,
+    pub total_cost: f64,
+    pub model_breakdowns: Vec<CostModel>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CostModel {
+    pub model_name: String,
+    pub cost: f64,
+    pub total_tokens: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CostTotals {
+    pub total_cost: f64,
+}
+
 #[derive(Debug)]
 pub struct Error(String);
 
@@ -171,6 +204,16 @@ impl std::error::Error for Error {}
 
 pub async fn usage_snapshot(check_status: bool) -> Result<Vec<Snapshot>, Error> {
     run_json(&usage_args(check_status)).await
+}
+
+pub async fn cost(days: u16) -> Result<Vec<CostReport>, Error> {
+    run_json(&[
+        "cost".to_owned(),
+        "--days".to_owned(),
+        days.to_string(),
+        "--json".to_owned(),
+    ])
+    .await
 }
 
 fn usage_args(check_status: bool) -> Vec<&'static str> {
@@ -351,6 +394,18 @@ mod tests {
         assert_eq!(hooks.events[0].event, "quota_low");
         assert_eq!(hooks.events[0].arguments, ["quota"]);
         assert_eq!(hooks.events[0].timeout_seconds, 5.0);
+    }
+
+    #[test]
+    fn deserializes_narrow_cost_payload() {
+        let reports: Vec<CostReport> = serde_json::from_str(
+            r#"[{"provider":"codex","currencyCode":"USD","historyDays":7,"daily":[{"date":"2026-08-09","totalCost":1.25,"modelBreakdowns":[{"modelName":"gpt-5","cost":1.25,"totalTokens":100}]}],"totals":{"totalCost":1.25}}]"#,
+        )
+        .unwrap();
+
+        assert_eq!(reports[0].currency_code, "USD");
+        assert_eq!(reports[0].daily[0].model_breakdowns[0].model_name, "gpt-5");
+        assert_eq!(reports[0].totals.total_cost, 1.25);
     }
 
     #[test]
