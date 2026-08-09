@@ -22,6 +22,28 @@ pub enum RefreshInterval {
     ThirtyMinutes,
 }
 
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub enum PresentationLayout {
+    Compact,
+    #[default]
+    Balanced,
+    Detailed,
+}
+
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub enum UsageBarFill {
+    #[default]
+    Solid,
+    Segmented,
+}
+
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ResetDisplay {
+    #[default]
+    Countdown,
+    Clock,
+}
+
 impl RefreshInterval {
     pub fn fixed_minutes(self) -> Option<u64> {
         match self {
@@ -35,13 +57,29 @@ impl RefreshInterval {
     }
 }
 
-#[derive(Debug, Clone, CosmicConfigEntry, Eq, PartialEq)]
-#[version = 4]
+#[derive(Debug, Clone, CosmicConfigEntry, Eq, PartialEq, Serialize, Deserialize)]
+#[version = 5]
 pub struct Config {
     pub icon_style: IconStyle,
     pub refresh_interval: RefreshInterval,
     pub refresh_on_popup_open: bool,
     pub overview_providers: Vec<String>,
+    pub terminal_app: String,
+    pub check_provider_status: bool,
+    pub language_override: String,
+    pub launch_at_login: bool,
+    pub high_contrast: bool,
+    pub presentation_layout: PresentationLayout,
+    pub switcher_rows: u8,
+    pub usage_bar_fill: UsageBarFill,
+    pub warning_markers: bool,
+    pub reset_display: ResetDisplay,
+    pub show_credits: bool,
+    pub show_cost_summary: bool,
+    pub cost_summary_days: u16,
+    pub hide_personal_info: bool,
+    pub show_storage_usage: bool,
+    pub show_debug_settings: bool,
 }
 
 impl Default for Config {
@@ -51,6 +89,54 @@ impl Default for Config {
             refresh_interval: RefreshInterval::default(),
             refresh_on_popup_open: true,
             overview_providers: Vec::new(),
+            terminal_app: "cosmic-term".into(),
+            check_provider_status: true,
+            language_override: String::new(),
+            launch_at_login: false,
+            high_contrast: false,
+            presentation_layout: PresentationLayout::default(),
+            switcher_rows: 3,
+            usage_bar_fill: UsageBarFill::default(),
+            warning_markers: true,
+            reset_display: ResetDisplay::default(),
+            show_credits: true,
+            show_cost_summary: false,
+            cost_summary_days: 7,
+            hide_personal_info: false,
+            show_storage_usage: false,
+            show_debug_settings: false,
         }
+    }
+}
+
+impl Config {
+    pub fn normalize(&mut self) {
+        self.overview_providers.truncate(6);
+        self.switcher_rows = self.switcher_rows.clamp(1, 6);
+        self.cost_summary_days = if self.cost_summary_days <= 7 { 7 } else { 30 };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_preferences_round_trip_and_enforce_native_limits() {
+        let mut config = Config {
+            overview_providers: (0..8).map(|index| format!("provider-{index}")).collect(),
+            switcher_rows: 99,
+            cost_summary_days: 99,
+            ..Default::default()
+        };
+
+        config.normalize();
+        let round_trip: Config =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+
+        assert_eq!(round_trip, config);
+        assert_eq!(round_trip.overview_providers.len(), 6);
+        assert_eq!(round_trip.switcher_rows, 6);
+        assert_eq!(round_trip.cost_summary_days, 30);
     }
 }

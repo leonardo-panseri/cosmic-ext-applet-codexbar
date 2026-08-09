@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fmt;
 use std::time::Duration;
 
@@ -16,6 +18,23 @@ pub struct Provider {
     #[serde(rename = "provider")]
     pub id: String,
     pub display_name: String,
+    pub enabled: bool,
+    pub default_enabled: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ConfigDump {
+    pub providers: Vec<ProviderConfig>,
+    pub version: u32,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ProviderConfig {
+    pub id: String,
+    #[serde(flatten)]
+    pub fields: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -112,15 +131,66 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-pub async fn usage_snapshot() -> Result<Vec<Snapshot>, Error> {
-    run_json(&["usage", "--provider", "all", "--format", "json", "--status"]).await
+pub async fn usage_snapshot(check_status: bool) -> Result<Vec<Snapshot>, Error> {
+    run_json(&usage_args(check_status)).await
+}
+
+fn usage_args(check_status: bool) -> Vec<&'static str> {
+    let mut args = vec!["usage", "--provider", "all", "--format", "json"];
+    if check_status {
+        args.push("--status");
+    }
+    args
 }
 
 pub async fn providers() -> Result<Vec<Provider>, Error> {
     run_json(&["config", "providers", "--json"]).await
 }
 
-async fn run_json<T: DeserializeOwned>(args: &[&str]) -> Result<T, Error> {
+pub async fn config_dump() -> Result<ConfigDump, Error> {
+    run_json(&["config", "dump", "--json"]).await
+}
+
+fn provider_toggle_args(provider: &str, enabled: bool) -> [String; 5] {
+    [
+        "config".into(),
+        if enabled { "enable" } else { "disable" }.into(),
+        "--provider".into(),
+        provider.into(),
+        "--json".into(),
+    ]
+}
+
+pub async fn set_provider_enabled(provider: &str, enabled: bool) -> Result<(), Error> {
+    let args = provider_toggle_args(provider, enabled);
+    run_json::<serde_json::Value, _>(&args).await.map(drop)
+}
+
+pub fn sign_in_command(provider: &str) -> Option<(&'static str, &'static [&'static str])> {
+    match provider {
+        "codex" => Some(("codex", &["login"])),
+        "claude" => Some(("claude", &["auth", "login"])),
+        "cursor" => Some(("cursor-agent", &["login"])),
+        _ => None,
+    }
+}
+
+pub async fn launch_sign_in(provider: &str) -> Result<(), Error> {
+    let Some((program, args)) = sign_in_command(provider) else {
+        return Err(Error(format!("sign in is not supported for {provider}")));
+    };
+    Command::new(program)
+        .args(args)
+        .spawn()
+        .map(drop)
+        .map_err(|error| Error(format!("failed to launch {program}: {error}")))
+}
+
+async fn run_json<T, S>(args: &[S]) -> Result<T, Error>
+where
+    T: DeserializeOwned,
+    S: AsRef<OsStr>,
+{
     let mut command = Command::new("codexbar");
     command.args(args).kill_on_drop(true);
 
@@ -165,6 +235,47 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["claude", "codex"]
         );
+    }
+
+    #[test]
+    fn provider_toggle_uses_codexbar_config_command() {
+        let enable = provider_toggle_args("claude", true);
+        assert_eq!(
+            enable.each_ref().map(String::as_str),
+            ["config", "enable", "--provider", "claude", "--json"]
+        );
+        let disable = provider_toggle_args("claude", false);
+        assert_eq!(
+            disable.each_ref().map(String::as_str),
+            ["config", "disable", "--provider", "claude", "--json"]
+        );
+    }
+
+    #[test]
+    fn config_dump_preserves_generic_provider_fields() {
+        let dump: ConfigDump = serde_json::from_str(
+            r#"{"providers":[{"id":"alibabatokenplan","enabled":false,"region":"intl"}],"version":1}"#,
+        )
+        .unwrap();
+
+        assert_eq!(dump.providers[0].id, "alibabatokenplan");
+        assert_eq!(dump.providers[0].fields["region"], "intl");
+    }
+
+    #[test]
+    fn supported_provider_sign_in_uses_provider_cli() {
+        assert_eq!(sign_in_command("codex"), Some(("codex", &["login"][..])));
+        assert_eq!(
+            sign_in_command("claude"),
+            Some(("claude", &["auth", "login"][..]))
+        );
+        assert!(sign_in_command("openrouter").is_none());
+    }
+
+    #[test]
+    fn provider_status_flag_follows_applet_preference() {
+        assert!(usage_args(true).contains(&"--status"));
+        assert!(!usage_args(false).contains(&"--status"));
     }
 
     #[test]

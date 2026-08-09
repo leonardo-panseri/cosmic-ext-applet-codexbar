@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::codexbar::{self, Provider, Snapshot, Window};
+use crate::codexbar::{self, ConfigDump, Provider, Snapshot, Window};
 use crate::config::{Config, IconStyle, RefreshInterval};
 use crate::fl;
 use crate::popup;
+use crate::settings::{self, ConfigChange};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
 use cosmic::iced::{
-    Alignment, Length, Limits, Subscription,
+    Alignment, Length, Limits, Size, Subscription,
     alignment::{Horizontal, Vertical},
     clipboard,
     widget::Stack,
-    window::Id,
+    window::{self, Id},
 };
 use cosmic::prelude::*;
 use cosmic::widget;
@@ -35,6 +36,10 @@ pub struct AppModel {
     core: cosmic::Core,
     /// The popup id.
     popup: Option<Id>,
+    /// The normal settings window id, when open.
+    settings_window: Option<Id>,
+    /// Settings navigation and provider-management state.
+    settings: settings::State,
     /// Configuration data that persists between application runs.
     config: Config,
     /// Last successfully loaded all-provider snapshot.
@@ -64,13 +69,29 @@ pub enum Message {
     SelectTab(segmented_button::Entity),
     UpdateConfig(Config),
     CopyError,
+    OpenSettings,
+    CloseSettings,
+    SettingsClosed(Id),
+    SettingsOpened,
+    SelectSettingsPane(cosmic::widget::nav_bar::Id),
+    ProviderSearch(String),
+    SelectProvider(String),
+    SetProviderEnabled(String, bool),
+    ProviderEnabled(Result<(String, bool), String>),
+    ConfigDumpLoaded(Result<ConfigDump, String>),
+    SignIn(String),
+    SignInFinished(Result<(), String>),
+    SettingsConfig(ConfigChange),
+    OpenLink(String),
+    LinkOpened(Result<(), String>),
+    Quit,
 }
 
 impl AppModel {
-    fn refresh_task() -> Task<cosmic::Action<Message>> {
-        cosmic::task::future(async {
+    fn refresh_task(check_status: bool) -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async move {
             Message::SnapshotsLoaded(
-                codexbar::usage_snapshot()
+                codexbar::usage_snapshot(check_status)
                     .await
                     .map_err(|error| error.to_string()),
             )
@@ -85,6 +106,41 @@ impl AppModel {
                     .map_err(|error| error.to_string()),
             )
         })
+    }
+
+    fn config_dump_task() -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async {
+            Message::ConfigDumpLoaded(
+                codexbar::config_dump()
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        })
+    }
+
+    fn provider_toggle_task(provider: String, enabled: bool) -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async move {
+            Message::ProviderEnabled(
+                codexbar::set_provider_enabled(&provider, enabled)
+                    .await
+                    .map(|()| (provider, enabled))
+                    .map_err(|error| error.to_string()),
+            )
+        })
+    }
+
+    fn sign_in_task(provider: String) -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async move {
+            Message::SignInFinished(
+                codexbar::launch_sign_in(&provider)
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        })
+    }
+
+    fn open_link_task(url: String) -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async move { Message::LinkOpened(settings::open_link(url).await) })
     }
 
     fn begin_refresh(&mut self) -> bool {
@@ -157,6 +213,7 @@ impl AppModel {
             &self.snapshots,
             &self.providers,
             &self.config.overview_providers,
+            self.config.switcher_rows,
             &self.selection,
         );
     }
@@ -304,6 +361,7 @@ fn provider_tabs(
     snapshots: &[Snapshot],
     providers: &[Provider],
     overview_providers: &[String],
+    switcher_rows: u8,
     selection: &Selection,
 ) -> SingleSelectModel {
     let mut tabs = SingleSelectModel::default();
@@ -317,7 +375,10 @@ fn provider_tabs(
             tabs.activate(id);
         }
     }
-    for snapshot in ordered_snapshots(snapshots, providers) {
+    for snapshot in ordered_snapshots(snapshots, providers)
+        .into_iter()
+        .take(usize::from(switcher_rows))
+    {
         let tab = Selection::Provider(snapshot.provider.clone());
         let label = providers
             .iter()
@@ -397,21 +458,30 @@ impl cosmic::Application for AppModel {
             refreshing: true,
             ..Default::default()
         };
-        app.config.overview_providers.truncate(6);
+        app.config.normalize();
         app.refresh_period = refresh_period(
             app.config.refresh_interval,
             &app.snapshots,
             Timestamp::now(),
         );
 
+        let check_status = app.config.check_provider_status;
         (
             app,
-            Task::batch([Self::refresh_task(), Self::providers_task()]),
+            Task::batch([
+                Self::refresh_task(check_status),
+                Self::providers_task(),
+                Self::config_dump_task(),
+            ]),
         )
     }
 
     fn on_close_requested(&self, id: Id) -> Option<Message> {
-        Some(Message::PopupClosed(id))
+        Some(if self.settings_window == Some(id) {
+            Message::SettingsClosed(id)
+        } else {
+            Message::PopupClosed(id)
+        })
     }
 
     /// Describes the interface based on the current state of the application model.
@@ -444,7 +514,18 @@ impl cosmic::Application for AppModel {
     /// The applet's popup window will be drawn using this view method. If there are
     /// multiple poups, you may match the id parameter to determine which popup to
     /// create a view for.
-    fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
+    fn view_window(&self, id: Id) -> Element<'_, Self::Message> {
+        if self.settings_window == Some(id) {
+            return settings::view(
+                &self.settings,
+                &self.config,
+                &self.providers,
+                &self.snapshots,
+                self.refreshing,
+                self.error_detail(),
+            );
+        }
+
         let body = if self.selection == Selection::Overview {
             popup::overview(
                 overview_snapshots(
@@ -455,7 +536,12 @@ impl cosmic::Application for AppModel {
                 &self.providers,
             )
         } else if let Some(snapshot) = self.selected_snapshot() {
-            crate::popup::provider_card(snapshot, self.refreshing, self.error_detail())
+            crate::popup::provider_card(
+                snapshot,
+                self.refreshing,
+                self.error_detail(),
+                &self.config,
+            )
         } else if let Some(error) = self.error_detail() {
             widget::container(
                 widget::column::with_capacity(3)
@@ -474,7 +560,7 @@ impl cosmic::Application for AppModel {
                 .into()
         };
 
-        let content = if self.provider_tabs.iter().count() > 1 {
+        let body = if self.provider_tabs.iter().count() > 1 {
             widget::column::with_capacity(2)
                 .push(
                     widget::segmented_control::horizontal(&self.provider_tabs)
@@ -487,6 +573,11 @@ impl cosmic::Application for AppModel {
         } else {
             body
         };
+
+        let content = widget::column::with_capacity(3)
+            .push(body)
+            .push(widget::divider::horizontal::light())
+            .push(widget::button::text(fl!("settings")).on_press(Message::OpenSettings));
 
         self.core.applet.popup_container(content).into()
     }
@@ -522,7 +613,7 @@ impl cosmic::Application for AppModel {
         match message {
             Message::RefreshRequested => {
                 if self.begin_refresh() {
-                    return Self::refresh_task();
+                    return Self::refresh_task(self.config.check_provider_status);
                 }
             }
             Message::SnapshotsLoaded(result) => self.apply_snapshot_result(result),
@@ -539,7 +630,7 @@ impl cosmic::Application for AppModel {
                 self.provider_tabs.activate(id);
             }
             Message::UpdateConfig(mut config) => {
-                config.overview_providers.truncate(6);
+                config.normalize();
                 self.config = config;
                 if self.config.overview_providers.is_empty()
                     && self.selection == Selection::Overview
@@ -578,7 +669,7 @@ impl cosmic::Application for AppModel {
                         .max_height(1080.0);
                     let popup = get_popup(popup_settings);
                     if self.config.refresh_on_popup_open && self.begin_refresh() {
-                        Task::batch([popup, Self::refresh_task()])
+                        Task::batch([popup, Self::refresh_task(self.config.check_provider_status)])
                     } else {
                         popup
                     }
@@ -589,6 +680,95 @@ impl cosmic::Application for AppModel {
                     self.popup = None;
                 }
             }
+            Message::OpenSettings => {
+                if let Some(id) = self.settings_window {
+                    return window::gain_focus(id);
+                }
+                let (id, open) = window::open(window::Settings {
+                    size: Size::new(960.0, 720.0),
+                    min_size: Some(Size::new(720.0, 520.0)),
+                    decorations: false,
+                    exit_on_close_request: false,
+                    ..Default::default()
+                });
+                self.settings_window = Some(id);
+                _ = self.set_window_title(fl!("settings-title"), id);
+                let open = open.map(|_| cosmic::Action::App(Message::SettingsOpened));
+                return if let Some(popup) = self.popup.take() {
+                    Task::batch([destroy_popup(popup), open])
+                } else {
+                    open
+                };
+            }
+            Message::CloseSettings => {
+                if let Some(id) = self.settings_window.take() {
+                    return window::close(id);
+                }
+            }
+            Message::SettingsClosed(id) => {
+                if self.settings_window == Some(id) {
+                    self.settings_window = None;
+                }
+                return window::close(id);
+            }
+            Message::SettingsOpened => {}
+            Message::SelectSettingsPane(id) => self.settings.select_pane(id),
+            Message::ProviderSearch(query) => self.settings.search = query,
+            Message::SelectProvider(provider) => {
+                self.settings.selected_provider = Some(provider);
+                self.settings.error = None;
+            }
+            Message::SetProviderEnabled(provider, enabled) => {
+                self.settings.error = None;
+                return Self::provider_toggle_task(provider, enabled);
+            }
+            Message::ProviderEnabled(Ok((provider, enabled))) => {
+                if let Some(entry) = self.providers.iter_mut().find(|entry| entry.id == provider) {
+                    entry.enabled = enabled;
+                }
+                let mut tasks = vec![Self::config_dump_task()];
+                if self.begin_refresh() {
+                    tasks.push(Self::refresh_task(self.config.check_provider_status));
+                }
+                return Task::batch(tasks);
+            }
+            Message::ProviderEnabled(Err(error)) => self.settings.error = Some(error),
+            Message::ConfigDumpLoaded(Ok(dump)) => self.settings.dump = dump,
+            Message::ConfigDumpLoaded(Err(error)) => self.settings.error = Some(error),
+            Message::SignIn(provider) => {
+                self.settings.error = None;
+                return Self::sign_in_task(provider);
+            }
+            Message::SignInFinished(Ok(())) => {}
+            Message::SignInFinished(Err(error)) => self.settings.error = Some(error),
+            Message::SettingsConfig(change) => {
+                let launch_at_login = change.launch_at_login();
+                if let Some(enabled) = launch_at_login
+                    && let Err(error) = settings::sync_autostart(enabled)
+                {
+                    self.settings.error = Some(error);
+                    return Task::none();
+                }
+                change.apply(&mut self.config);
+                match cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
+                    .and_then(|context| self.config.write_entry(&context))
+                {
+                    Ok(()) => {}
+                    Err(error) => {
+                        self.settings.error = Some(format!("failed to save settings: {error}"))
+                    }
+                }
+                self.rebuild_provider_tabs();
+                self.refresh_period = refresh_period(
+                    self.config.refresh_interval,
+                    &self.snapshots,
+                    Timestamp::now(),
+                );
+            }
+            Message::OpenLink(url) => return Self::open_link_task(url),
+            Message::LinkOpened(Ok(())) => {}
+            Message::LinkOpened(Err(error)) => self.settings.error = Some(error),
+            Message::Quit => return cosmic::iced::exit(),
         }
         Task::none()
     }
@@ -632,6 +812,7 @@ mod tests {
             &snapshots,
             &providers,
             &[],
+            6,
             &Selection::Provider("claude".into()),
         );
         assert_eq!(
@@ -667,6 +848,7 @@ mod tests {
             }],
             &[],
             &[],
+            6,
             &Selection::Provider("codex".into()),
         );
 
@@ -676,6 +858,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["codex"]
         );
+    }
+
+    #[test]
+    fn switcher_row_count_caps_visible_provider_tabs() {
+        let snapshots = (0..4)
+            .map(|index| Snapshot {
+                provider: format!("provider-{index}"),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+
+        let tabs = provider_tabs(&snapshots, &[], &[], 2, &Selection::default());
+
+        assert_eq!(tabs.iter().count(), 2);
     }
 
     #[test]

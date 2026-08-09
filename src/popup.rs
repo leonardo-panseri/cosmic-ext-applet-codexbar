@@ -2,17 +2,24 @@
 
 use crate::app::{Message, available_windows, snapshot_percent};
 use crate::codexbar::{Provider, Snapshot, Window};
+use crate::config::{Config, PresentationLayout, ResetDisplay, UsageBarFill};
 use crate::fl;
 use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
 use cosmic::widget;
 
-pub fn provider_card(
-    snapshot: &Snapshot,
+pub fn provider_card<'a>(
+    snapshot: &'a Snapshot,
     refreshing: bool,
     error: Option<String>,
-) -> Element<'_, Message> {
-    let mut content = widget::column::with_capacity(12).spacing(12);
+    config: &'a Config,
+) -> Element<'a, Message> {
+    let (padding, spacing) = match config.presentation_layout {
+        PresentationLayout::Compact => (8, 8),
+        PresentationLayout::Balanced => (16, 12),
+        PresentationLayout::Detailed => (20, 16),
+    };
+    let mut content = widget::column::with_capacity(12).spacing(spacing);
     let identity = snapshot.usage.as_ref().map(|usage| &usage.identity);
     let provider = if snapshot.provider.is_empty() {
         identity
@@ -23,8 +30,13 @@ pub fn provider_card(
         &snapshot.provider
     };
 
+    let provider_heading: Element<'_, Message> = if config.high_contrast {
+        widget::text::title3(provider).into()
+    } else {
+        widget::text::heading(provider).into()
+    };
     let mut header = widget::row::with_capacity(4)
-        .push(widget::text::heading(provider))
+        .push(provider_heading)
         .push(widget::space::horizontal())
         .align_y(Alignment::Center);
     if let Some(plan) = identity
@@ -54,7 +66,7 @@ pub fn provider_card(
     }
 
     for (label, window) in available_windows(snapshot) {
-        content = content.push(window_row(label, window));
+        content = content.push(window_row(label, window, config));
     }
 
     if let Some(summary) = snapshot.pace.as_ref().and_then(|pace| {
@@ -67,7 +79,9 @@ pub fn provider_card(
         content = content.push(widget::text::body(format!("Pace · {summary}")));
     }
 
-    if let Some(credits) = &snapshot.credits {
+    if config.show_credits
+        && let Some(credits) = &snapshot.credits
+    {
         content = content.push(widget::text::body(format!(
             "Credits · {:.2}",
             credits.remaining
@@ -94,7 +108,7 @@ pub fn provider_card(
     }
 
     widget::container(content)
-        .padding(16)
+        .padding(padding)
         .width(Length::Fill)
         .into()
 }
@@ -134,12 +148,8 @@ pub fn overview<'a>(
         .into()
 }
 
-fn window_row(label: &'static str, window: &Window) -> Element<'static, Message> {
-    let reset = window
-        .reset_description
-        .as_deref()
-        .or(window.resets_at.as_deref())
-        .unwrap_or("Reset unavailable");
+fn window_row(label: &'static str, window: &Window, config: &Config) -> Element<'static, Message> {
+    let reset = reset_label(window, config.reset_display);
     let title = if window.window_minutes == 0 {
         label.to_owned()
     } else {
@@ -153,10 +163,37 @@ fn window_row(label: &'static str, window: &Window) -> Element<'static, Message>
                 .push(widget::space::horizontal())
                 .push(widget::text::body(format!("{:.0}%", window.used_percent))),
         )
-        .push(widget::determinate_linear(window.used_percent / 100.0).width(Length::Fill))
+        .push(
+            widget::determinate_linear(window.used_percent / 100.0)
+                .markers(progress_markers(config.usage_bar_fill))
+                .girth(if config.high_contrast { 8.0 } else { 4.0 })
+                .width(Length::Fill),
+        )
         .push(widget::text::caption(reset.to_owned()))
         .spacing(4)
         .into()
+}
+
+fn reset_label(window: &Window, display: ResetDisplay) -> &str {
+    match display {
+        ResetDisplay::Countdown => window
+            .reset_description
+            .as_deref()
+            .or(window.resets_at.as_deref()),
+        ResetDisplay::Clock => window
+            .resets_at
+            .as_deref()
+            .or(window.reset_description.as_deref()),
+    }
+    .unwrap_or("Reset unavailable")
+}
+
+fn progress_markers(fill: UsageBarFill) -> Vec<f32> {
+    if fill == UsageBarFill::Segmented {
+        vec![0.25, 0.5, 0.75]
+    } else {
+        Vec::new()
+    }
 }
 
 fn window_duration(minutes: u32) -> String {
@@ -168,5 +205,27 @@ fn window_duration(minutes: u32) -> String {
         format!("{}h", minutes / 60)
     } else {
         format!("{minutes}m")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_presentation_changes_reset_and_fill_rendering() {
+        let window = Window {
+            resets_at: Some("2026-08-10T09:00:00Z".into()),
+            reset_description: Some("in 2 hours".into()),
+            ..Default::default()
+        };
+
+        assert_eq!(reset_label(&window, ResetDisplay::Countdown), "in 2 hours");
+        assert_eq!(
+            reset_label(&window, ResetDisplay::Clock),
+            "2026-08-10T09:00:00Z"
+        );
+        assert!(progress_markers(UsageBarFill::Solid).is_empty());
+        assert_eq!(progress_markers(UsageBarFill::Segmented).len(), 3);
     }
 }
