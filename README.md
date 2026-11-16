@@ -41,11 +41,19 @@ just flatpak-install   # adds build-flatpak/repo as the `codexbar-applet-local` 
 
 Open **Settings → Desktop → Panel → Configure panel applets**, press **Add applet** and choose **CodexBar**.
 
+The panel icon in the popup's header opens the panel page, where you choose whether the panel button shows usage
+bars, percentages or both, and which providers it shows. CodexBar only formats the bar for its first few providers
+(**Providers in the bar** in CodexBar Settings, 2 by default), so set that to **All** to choose among every
+provider.
+
 ## Development
 
 A [justfile](./justfile) is included for the [casey/just][just] command runner.
 
 - `just run` builds and runs the applet outside the panel
+- `CODEXBAR_PREVIEW=tests/fixtures/snapshot-two-providers-spending.json cargo run` shows the panel button and the
+  popup for a fixture in an ordinary window (debug builds only; `CODEXBAR_PREVIEW_PROVIDER=codex` picks the tab, `CODEXBAR_PREVIEW_PANEL_PAGE=1` opens
+  the panel page)
 - `cargo test` runs the unit tests; `cargo test -- --ignored live` also queries a running CodexBar (read-only)
 - `just check --all-targets` runs clippy with pedantic lints; CI also runs `cargo fmt --check` and denies warnings
 - `just flatpak-build` builds the working tree as a Flatpak; builder state stays in `.flatpak-builder/` and

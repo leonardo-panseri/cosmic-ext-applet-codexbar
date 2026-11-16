@@ -65,6 +65,12 @@ reads them through the snapshot, and the two adapters should look the same. That
 So the applet has no settings. The `config.rs`, cosmic-config schema and settings window all go. If
 an applet-only preference ever becomes necessary, add it then.
 
+**Since 2026-11-16** the applet has two display preferences of its own, both for the panel button and set on the
+popup's panel page (§4.3): `hidden_providers`, the providers it leaves out, and `panel_style`, whether it shows
+bars, percentages or both. The desktop app's `barProviders` is only a count (the bar shows its first N
+providers), so it can't express the first, and `configure` has nothing to write either to. There's still no
+settings window.
+
 The one exception is internal state with no settings UI: a single cosmic-config flag,
 `tray_prompt_dismissed`, so the tray prompt (D8) appears only once.
 
@@ -264,13 +270,15 @@ also done.
 
 ### 4.2 Panel button
 
-**Horizontal panel:** for each entry in `barEntries`, the provider logo (or `tag`) followed by `text`, separated by
-`·`. Then:
+**Horizontal panel:** for each entry in `barEntries` whose provider isn't in `hidden_providers` (D3), the provider
+logo (or `tag`), then as `panel_style` says (D3) small stacked bars for its first three windows, scoped caps last
+(filled to `displayValue`, in the accent colour or the destructive colour when `warning`; three fit in an icon's
+height), and `text`, separated by `·`. A provider without windows shows `text` even with bars only. Then:
 
-- add `+N` when `entries.len()` is larger than `barEntries.len()`;
+- add `+N` for the entries without a bar entry, not counting hidden ones;
 - put a leading `!` before everything when `stale` is true;
 - with no `barEntries`, show the `summary` string;
-- with an empty snapshot, show the app icon.
+- with an empty snapshot, or every bar entry hidden, show the app icon.
 
 **Vertical panel:** the app icon only. Its badge shows the D7 state and staleness.
 
@@ -281,8 +289,9 @@ also done.
 One tab per entry, laid out after the YapCap applet. (Until 2026-11-16 all entries went in one scrolling list, as in
 Omarchy.)
 
-1. **Header:** the status line, then **Usage & Spend** (the desktop app's `spending` window, which has the costs as
-   well as usage), **Settings** and **Refresh** as icon buttons with tooltips.
+1. **Header:** the status line, then **Panel button** (the panel page, item 4), **Usage & Spend** (the desktop app's
+   `spending` window, which has the costs as well as usage), **Settings** and **Refresh** as icon buttons with
+   tooltips.
    The status line is `error`, or "Refreshing…" while `busy`, or "Updated {updated}", with "· older data" added when
    `stale`, after a warning icon when stale or failing.
 2. **Tabs:** one per entry, showing the provider logo (or the bar entry's `tag`), with the display name as a tooltip.
@@ -296,10 +305,19 @@ Omarchy.)
      text when the status isn't operational, and `error` when set.
    - **Usage card:** for each window, `label`, a `progress_bar` showing `displayValue` (destructive colour when
      `warning`), then `{displayValue}% {displaySuffix}` and `resetText` on one line. A tick on the bar marks
-     `paceExpected`, and `pace` shows as a tooltip on the bar, one `|`-separated part per line, or "No pace estimate
-     for this window" when it's empty.
+     `paceExpected`. The bar's tooltip has the verdict from `pace` ("Lasts until reset", the last of its
+     `|`-separated parts, in the warning colour when `paceDelta` is positive) over "{used}% used · {paceExpected}%
+     expected by now", which says the rest of `pace` more plainly. Without a pace it says "No pace estimate for
+     this window".
    - **Credits card:** `credits`, `extraUsage` and `resetCredits` rows, each only when present.
    - **Spending card:** from the matching `spending` row, today and 30 days. Show `error` instead when it's set.
+4. **Panel page:** in place of the tabs and page, until the popup closes or its back button is pressed. A segmented
+   control for `panel_style` (Bars, Percent, Both), a toggle per entry for `hidden_providers`, and, when the desktop
+   app left entries out of `barEntries`, a note that its "Providers in the bar" setting decides how many it formats.
+
+**Legibility:** with frosted applets on, COSMIC's popup background can be clear enough that windows behind
+compete with text outside the cards. Every popup gets a layer of the theme's background under its content that
+brings it to at least 85% opacity; opaque themes are unchanged.
 
 **Keyboard:** `R` refreshes, `Esc` closes, and the left and right arrows switch tabs.
 

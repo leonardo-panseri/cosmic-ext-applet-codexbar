@@ -14,10 +14,12 @@ use cosmic::iced::keyboard::{self, Key, key::Named};
 use cosmic::iced::widget::{progress_bar, stack, svg};
 use cosmic::iced::{Alignment, Border, Color, Length};
 use cosmic::prelude::*;
-use cosmic::widget::{self, icon, tooltip};
+use cosmic::widget::segmented_button::{self, SingleSelectModel};
+use cosmic::widget::{self, icon, segmented_control, tooltip};
 
 use crate::app::Message;
 use crate::backend;
+use crate::config::PanelStyle;
 use crate::guidance::{self, Banner};
 use crate::snapshot::{Entry, ExtraUsage, ResetCredits, Snapshot, Spending, Window};
 use crate::{fl, icons};
@@ -34,15 +36,31 @@ const PAGE_LOGO: u16 = 28;
 const DOT: f32 = 8.0;
 const BAR_GIRTH: f32 = 8.0;
 const PACE_TICK: f32 = 4.0;
-/// Inside tooltips, which libcosmic draws tight around their text.
+/// Inside tooltips, which libcosmic draws tight around their text. iced pads all four sides
+/// alike, so the sides get [`TOOLTIP_SIDES`] more.
 const TOOLTIP_PADDING: f32 = 8.0;
+const TOOLTIP_SIDES: u16 = 6;
+/// The least opacity of the popup's background. With frosted applets on, COSMIC's own can be
+/// so clear that windows behind compete with the text that isn't on a card.
+const BACKDROP_ALPHA: f32 = 0.85;
 const UNDERLINE: f32 = 2.0;
 
-/// The `Connected` popup for the entry of `provider`, or the first entry. The autostart banner
-/// and the tray prompt show under the header ([`crate::guidance`]).
+/// What the popup's panel page shows and edits.
+#[derive(Clone, Copy)]
+pub struct PanelSettings<'a> {
+    /// The panel page is showing instead of the tabs.
+    pub open: bool,
+    pub hidden: &'a [String],
+    /// The style choice, from [`style_model`].
+    pub styles: &'a SingleSelectModel,
+}
+
+/// The `Connected` popup for the entry of `provider`, or the first entry, or the panel page.
+/// The autostart banner and the tray prompt show under the header ([`crate::guidance`]).
 pub fn view<'a>(
     snapshot: &'a Snapshot,
     provider: Option<&str>,
+    panel: PanelSettings<'a>,
     autostart: Option<Banner<'a>>,
     tray: Option<Banner<'a>>,
 ) -> Element<'a, Message> {
@@ -57,7 +75,7 @@ pub fn view<'a>(
     let mut popup = widget::Column::new()
         .spacing(12)
         .padding([12, 0, 16, 0])
-        .push(header(snapshot));
+        .push(header(snapshot, panel.open));
     if !banners.is_empty() {
         popup = popup.push(
             widget::Column::with_children(banners)
@@ -66,20 +84,24 @@ pub fn view<'a>(
         );
     }
     let entry = selected(snapshot, provider);
-    if snapshot.entries.len() > 1 {
-        popup = popup.push(tabs(snapshot, entry));
-    }
-    let page = match entry {
-        Some(entry) => page(entry, spending_for(snapshot, &entry.provider)),
-        None => empty(snapshot),
+    let page = if panel.open {
+        panel_page(snapshot, panel)
+    } else {
+        if snapshot.entries.len() > 1 {
+            popup = popup.push(tabs(snapshot, entry));
+        }
+        match entry {
+            Some(entry) => page(entry, spending_for(snapshot, &entry.provider)),
+            None => empty(snapshot),
+        }
     };
     popup
         .push(widget::container(widget::scrollable(page)).max_height(PAGE_MAX_HEIGHT))
         .into()
 }
 
-/// The status line, then the actions: Usage & Spend, Settings and Refresh.
-fn header(snapshot: &Snapshot) -> Element<'_, Message> {
+/// The status line, then the actions: the panel page, Usage & Spend, Settings and Refresh.
+fn header(snapshot: &Snapshot, panel_open: bool) -> Element<'_, Message> {
     let mut status = widget::Row::new().spacing(6).align_y(Alignment::Center);
     if snapshot.stale || !snapshot.error.is_empty() {
         status = status.push(warning_icon(14));
@@ -103,11 +125,21 @@ fn header(snapshot: &Snapshot) -> Element<'_, Message> {
             (!snapshot.busy).then_some(Message::Refresh),
         ),
     ];
+    let panel = tip(
+        widget::button::icon(icon::from_name("preferences-panel-symbolic").handle())
+            // The plain icon class only recolours a selected button's text.
+            .class(cosmic::theme::Button::IconVertical)
+            .selected(panel_open)
+            .on_press(Message::TogglePanelPage),
+        widget::text::caption(fl!("panel-button")),
+        tooltip::Position::Bottom,
+    );
     let row = actions.into_iter().fold(
         widget::Row::new()
             .spacing(4)
             .align_y(Alignment::Center)
-            .push(widget::container(status).width(Length::Fill)),
+            .push(widget::container(status).width(Length::Fill))
+            .push(panel),
         |row, (name, label, message)| row.push(action(name, label, message)),
     );
     // The buttons' own padding lines their icons up with the page's margin.
@@ -256,6 +288,65 @@ fn page<'a>(entry: &'a Entry, spending: Option<&'a Spending>) -> Element<'a, Mes
     page.into()
 }
 
+/// What the panel button shows: the style, and a toggle per provider.
+fn panel_page<'a>(snapshot: &'a Snapshot, panel: PanelSettings<'a>) -> Element<'a, Message> {
+    let title = widget::Row::new()
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .push(
+            widget::button::icon(icon::from_name("go-previous-symbolic").handle())
+                .on_press(Message::TogglePanelPage),
+        )
+        .push(widget::text::title4(fl!("panel-button")));
+    let style = segmented_control::horizontal(panel.styles)
+        .on_activate(Message::ChoosePanelStyle)
+        .width(Length::Fill);
+    let mut page = widget::Column::new()
+        .spacing(16)
+        .padding([0, MARGIN, 0, MARGIN - 8])
+        .push(title)
+        .push(
+            // The segmented control draws its own frame, so no card.
+            widget::Column::new()
+                .spacing(8)
+                .padding([0, 0, 0, 8])
+                .push(widget::text::heading(fl!("panel-shows")))
+                .push(style),
+        );
+
+    if !snapshot.entries.is_empty() {
+        let toggles =
+            snapshot
+                .entries
+                .iter()
+                .fold(widget::Column::new().spacing(12), |column, entry| {
+                    let provider = entry.provider.clone();
+                    let mut row = widget::Row::new().spacing(12).align_y(Alignment::Center);
+                    if let Some(logo) = icons::provider(&entry.provider) {
+                        row = row.push(icon::icon(logo).size(TAB_LOGO));
+                    }
+                    column.push(
+                        row.push(
+                            widget::text::body(display_name(&entry.provider)).width(Length::Fill),
+                        )
+                        .push(
+                            widget::toggler(!panel.hidden.contains(&entry.provider)).on_toggle(
+                                move |shown| Message::ShowInPanel(provider.clone(), shown),
+                            ),
+                        ),
+                    )
+                });
+        let mut providers = widget::Column::new()
+            .spacing(8)
+            .push(section(fl!("providers"), toggles));
+        if let Some(count) = bar_limit(snapshot) {
+            providers = providers.push(widget::text::caption(fl!("bar-limit", count = count)));
+        }
+        page = page.push(widget::container(providers).padding([0, 0, 0, 8]));
+    }
+    page.into()
+}
+
 /// The page without entries: nothing while the desktop app is starting, since the status line
 /// says so, and otherwise where to turn providers on.
 fn empty(snapshot: &Snapshot) -> Element<'_, Message> {
@@ -374,23 +465,42 @@ fn bar(window: &Window) -> Element<'_, Message> {
                 progress,
                 widget::Row::new()
                     .height(Length::Fixed(BAR_GIRTH))
-                    .push(widget::Space::new().width(Length::FillPortion(before)))
+                    .push_maybe(spacer(before))
                     .push(tick)
-                    .push(widget::Space::new().width(Length::FillPortion(1000 - before))),
+                    .push_maybe(spacer(1000 - before)),
             ]
             .into()
         }
     };
-    let lines: Vec<String> = match pace_lines(window) {
-        lines if lines.is_empty() => vec![fl!("no-pace")],
-        lines => lines.into_iter().map(str::to_owned).collect(),
+    tip(bar, pace_view(pace_tip(window)), tooltip::Position::Top)
+}
+
+/// The pace tooltip: the verdict, in the warning colour when over pace, over the comparison the
+/// tick shows.
+fn pace_view<'a>(pace: Option<PaceTip>) -> Element<'a, Message> {
+    let Some(pace) = pace else {
+        return widget::text::caption(fl!("no-pace")).into();
     };
-    let pace = lines
-        .into_iter()
-        .fold(widget::Column::new().spacing(2), |column, line| {
-            column.push(widget::text::caption(line))
-        });
-    tip(bar, pace, tooltip::Position::Top)
+    let mut column = widget::Column::new().spacing(2);
+    if let Some(verdict) = pace.verdict {
+        let mut verdict = widget::text::heading(verdict);
+        if pace.over {
+            verdict = verdict.class(cosmic::theme::Text::Custom(|theme| {
+                cosmic::iced::widget::text::Style {
+                    color: Some(theme.cosmic().warning_text_color().into()),
+                    ..cosmic::iced::widget::text::Catalog::style(
+                        theme,
+                        &cosmic::theme::Text::Default,
+                    )
+                }
+            }));
+        }
+        column = column.push(verdict);
+    }
+    if let Some(detail) = pace.detail {
+        column = column.push(widget::text::caption(detail));
+    }
+    column.into()
 }
 
 /// A tooltip with room around its text.
@@ -399,10 +509,41 @@ fn tip<'a>(
     text: impl Into<Element<'a, Message>>,
     position: tooltip::Position,
 ) -> Element<'a, Message> {
+    let text = widget::container(text).padding([0, TOOLTIP_SIDES]);
     tooltip(content, text, position)
         .padding(TOOLTIP_PADDING)
         .gap(4)
         .into()
+}
+
+/// Any popup's content over a layer of the theme's background that brings it up to
+/// [`BACKDROP_ALPHA`], so frosted popups stay frosted but legible. Opaque themes are unchanged.
+pub fn backdrop<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    widget::container(content)
+        .class(cosmic::theme::Container::custom(|theme| {
+            let cosmic = theme.cosmic();
+            let base = cosmic.background(theme.transparent).base;
+            let mut layer: Color = base.into();
+            layer.a = layer_alpha(base.alpha, BACKDROP_ALPHA);
+            widget::container::Style {
+                background: (layer.a > 0.0).then(|| layer.into()),
+                border: Border {
+                    radius: cosmic.corner_radii.radius_m.into(),
+                    ..Border::default()
+                },
+                ..widget::container::Style::default()
+            }
+        }))
+        .into()
+}
+
+/// The alpha of a layer that, drawn over a background of alpha `below`, makes it `target`.
+pub fn layer_alpha(below: f32, target: f32) -> f32 {
+    if below >= target {
+        0.0
+    } else {
+        (target - below) / (1.0 - below)
+    }
 }
 
 /// A small round dot in the colour of a severity.
@@ -440,13 +581,23 @@ fn warning_icon<'a>(size: u16) -> Element<'a, Message> {
 }
 
 #[allow(clippy::cast_possible_truncation)] // A percentage.
-fn percent(value: f64) -> f32 {
+pub fn percent(value: f64) -> f32 {
     value.clamp(0.0, 100.0) as f32
+}
+
+/// Empty space taking `portion` thousandths of a row, or `None` for none: iced lays out
+/// `FillPortion(0)` as if it filled the row.
+pub fn spacer<'a>(portion: u16) -> Option<Element<'a, Message>> {
+    (portion > 0).then(|| {
+        widget::Space::new()
+            .width(Length::FillPortion(portion))
+            .into()
+    })
 }
 
 /// A percentage in thousandths, for [`Length::FillPortion`].
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0 to 1000.
-fn portion(percent: f32) -> u16 {
+pub fn portion(percent: f32) -> u16 {
     (percent.clamp(0.0, 100.0) * 10.0).round() as u16
 }
 
@@ -595,7 +746,84 @@ pub fn pace_marker(window: &Window) -> Option<f32> {
     Some(percent(at))
 }
 
-/// The pace text one part per line; the tooltip says there's no pace when this is empty, split where upstream joins them with `|`.
+/// What the pace tooltip says.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaceTip {
+    /// How the window ends at this rate, such as "Lasts until reset", from the pace text.
+    pub verdict: Option<String>,
+    /// "{used}% used · {expected}% expected by now", what the tick compares.
+    pub detail: Option<String>,
+    /// Using faster than an even pace.
+    pub over: bool,
+}
+
+/// The pace tooltip, or `None` without a pace. Upstream's pace text is "{delta} in reserve |
+/// Expected {n}% used | {verdict}": the first two parts are said again, more plainly, from
+/// `remaining` and `paceExpected`, so only the verdict is kept. A shorter text shows as it comes.
+pub fn pace_tip(window: &Window) -> Option<PaceTip> {
+    let parts = pace_lines(window);
+    if parts.is_empty() && window.pace_expected.is_none() {
+        return None;
+    }
+    let verdict = if parts.len() >= 3 {
+        parts.last()
+    } else {
+        parts.first()
+    };
+    let detail = window.pace_expected.map(|expected| {
+        fl!(
+            "pace-detail",
+            used = number((100.0 - window.remaining).clamp(0.0, 100.0)),
+            expected = number(expected)
+        )
+    });
+    Some(PaceTip {
+        verdict: verdict.map(|&verdict| verdict.to_owned()),
+        detail,
+        over: window.pace_delta.is_some_and(|delta| delta > 0.0),
+    })
+}
+
+/// When the desktop app left providers out of the bar, how many it puts in: its "Providers in
+/// the bar" setting, which the panel page explains.
+pub fn bar_limit(snapshot: &Snapshot) -> Option<usize> {
+    let count = snapshot.bar_entries.len();
+    (count > 0 && snapshot.entries.len() > count).then_some(count)
+}
+
+/// The style choice for the panel page, with `style` selected.
+pub fn style_model(style: PanelStyle) -> SingleSelectModel {
+    let mut model = PanelStyle::ALL
+        .into_iter()
+        .fold(SingleSelectModel::builder(), |model, style| {
+            let label = match style {
+                PanelStyle::Bars => fl!("panel-style-bars"),
+                PanelStyle::Percent => fl!("panel-style-percent"),
+                PanelStyle::Both => fl!("panel-style-both"),
+            };
+            model.insert(move |item| item.text(label).data(style))
+        })
+        .build();
+    select_style(&mut model, style);
+    model
+}
+
+/// Selects `style` in a model from [`style_model`], as when the config changes elsewhere.
+pub fn select_style(model: &mut SingleSelectModel, style: PanelStyle) {
+    let item = model
+        .iter()
+        .find(|&item| model.data::<PanelStyle>(item) == Some(&style));
+    if let Some(item) = item {
+        model.activate(item);
+    }
+}
+
+/// The style of a segment of a model from [`style_model`].
+pub fn style_of(model: &SingleSelectModel, item: segmented_button::Entity) -> Option<PanelStyle> {
+    model.data::<PanelStyle>(item).copied()
+}
+
+/// The pace text one part per line, split where upstream joins them with `|`.
 pub fn pace_lines(window: &Window) -> Vec<&str> {
     window
         .pace
@@ -882,12 +1110,86 @@ mod tests {
             pace_lines(&snapshot.entries[0].windows[0]),
             ["88% in reserve", "Expected 98% used", "Lasts until reset"]
         );
-        assert!(pace_lines(&snapshot.entries[0].windows[2]).is_empty());
+        assert_eq!(
+            pace_lines(&snapshot.entries[0].windows[2]),
+            Vec::<&str>::new()
+        );
         let single = Window {
             pace: "On track".into(),
             ..Window::default()
         };
         assert_eq!(pace_lines(&single), ["On track"]);
+    }
+
+    #[test]
+    fn the_pace_tooltip_keeps_the_verdict_and_says_the_rest_plainly() {
+        let snapshot = two_providers();
+        let tip = pace_tip(&snapshot.entries[0].windows[0]).unwrap();
+        assert_eq!(tip.verdict.as_deref(), Some("Lasts until reset"));
+        assert_eq!(
+            tip.detail.map(|detail| plain(&detail)).as_deref(),
+            Some("10% used · 98% expected by now")
+        );
+        assert!(!tip.over);
+        // Fable only: no pace at all.
+        assert_eq!(pace_tip(&snapshot.entries[0].windows[2]), None);
+
+        let over = Window {
+            remaining: 40.0,
+            pace: "15% in deficit | Expected 45% used | Runs out in 2h".into(),
+            pace_expected: Some(45.0),
+            pace_delta: Some(15.0),
+            ..Window::default()
+        };
+        let tip = pace_tip(&over).unwrap();
+        assert_eq!(tip.verdict.as_deref(), Some("Runs out in 2h"));
+        assert_eq!(
+            tip.detail.map(|detail| plain(&detail)).as_deref(),
+            Some("60% used · 45% expected by now")
+        );
+        assert!(tip.over);
+
+        let text_only = Window {
+            pace: "On pace".into(),
+            ..Window::default()
+        };
+        assert_eq!(
+            pace_tip(&text_only),
+            Some(PaceTip {
+                verdict: Some("On pace".into()),
+                detail: None,
+                over: false
+            })
+        );
+    }
+
+    #[test]
+    fn the_bar_limit_shows_only_when_providers_were_left_out() {
+        let three = fixture(include_str!(
+            "../tests/fixtures/snapshot-provider-error.json"
+        ));
+        assert_eq!(bar_limit(&three), Some(2));
+        assert_eq!(bar_limit(&two_providers()), None);
+        assert_eq!(bar_limit(&Snapshot::default()), None);
+    }
+
+    #[test]
+    fn style_choice_round_trips() {
+        let mut model = style_model(PanelStyle::Percent);
+        assert_eq!(style_of(&model, model.active()), Some(PanelStyle::Percent));
+        select_style(&mut model, PanelStyle::Bars);
+        assert_eq!(style_of(&model, model.active()), Some(PanelStyle::Bars));
+    }
+
+    #[test]
+    fn the_backdrop_only_tops_up_clear_backgrounds() {
+        let over = |below: f32, layer: f32| below + layer * (1.0 - below);
+        for below in [0.0, 0.3, 0.6] {
+            let layer = layer_alpha(below, 0.85);
+            assert!((over(below, layer) - 0.85).abs() < 1e-6, "{below}");
+        }
+        assert!(layer_alpha(0.9, 0.85).abs() < f32::EPSILON);
+        assert!(layer_alpha(1.0, 0.85).abs() < f32::EPSILON);
     }
 
     #[test]

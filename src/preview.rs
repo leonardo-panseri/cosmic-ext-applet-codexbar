@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! Debug builds only: `CODEXBAR_PREVIEW=tests/fixtures/<file>.json cargo run` shows the
-//! `Connected` popup for that snapshot in an ordinary window, to check the layout without the
-//! panel or the desktop app. `CODEXBAR_PREVIEW_PROVIDER=codex` selects that tab first. The header
+//! panel button's content and the `Connected` popup for that snapshot in an ordinary window, to
+//! check the layout without the panel or the desktop app. `CODEXBAR_PREVIEW_PROVIDER=codex` selects that tab first, and
+//! `CODEXBAR_PREVIEW_PANEL_PAGE=1` opens the panel page. The header
 //! buttons do nothing.
 
 use cosmic::iced::{Border, Color, Length, Size};
 use cosmic::prelude::*;
 use cosmic::widget;
 
-use crate::app::Message;
+use cosmic::widget::segmented_button::SingleSelectModel;
+
+use crate::app::{self, Message};
+use crate::config::PanelStyle;
 use crate::popup;
 use crate::snapshot::{self, Snapshot};
 
@@ -28,6 +32,11 @@ struct Preview {
     core: cosmic::Core,
     snapshot: Snapshot,
     provider: Option<String>,
+    /// As the applet's config, but only in memory.
+    hidden: Vec<String>,
+    style: PanelStyle,
+    styles: SingleSelectModel,
+    panel_page: bool,
 }
 
 impl cosmic::Application for Preview {
@@ -50,6 +59,10 @@ impl cosmic::Application for Preview {
             core,
             snapshot,
             provider: std::env::var("CODEXBAR_PREVIEW_PROVIDER").ok(),
+            hidden: Vec::new(),
+            style: PanelStyle::default(),
+            styles: popup::style_model(PanelStyle::default()),
+            panel_page: std::env::var_os("CODEXBAR_PREVIEW_PANEL_PAGE").is_some(),
         };
         (preview, Task::none())
     }
@@ -61,6 +74,16 @@ impl cosmic::Application for Preview {
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
             Message::SelectProvider(provider) => self.provider = Some(provider),
+            Message::ShowInPanel(provider, shown) => {
+                self.hidden = app::with_shown(&self.hidden, &provider, shown);
+            }
+            Message::TogglePanelPage => self.panel_page = !self.panel_page,
+            Message::ChoosePanelStyle(item) => {
+                if let Some(style) = popup::style_of(&self.styles, item) {
+                    self.styles.activate(item);
+                    self.style = style;
+                }
+            }
             Message::SwitchProvider(step) => {
                 self.provider = popup::adjacent(&self.snapshot, self.provider.as_deref(), step)
                     .map(str::to_owned);
@@ -75,6 +98,11 @@ impl cosmic::Application for Preview {
         let popup = widget::container(popup::view(
             &self.snapshot,
             self.provider.as_deref(),
+            popup::PanelSettings {
+                open: self.panel_page,
+                hidden: &self.hidden,
+                styles: &self.styles,
+            },
             None,
             None,
         ))
@@ -94,6 +122,21 @@ impl cosmic::Application for Preview {
                 ..widget::container::Style::default()
             }
         }));
-        widget::container(popup).padding(20).into()
+        let bar = self.snapshot.bar(&self.hidden);
+        let panel = widget::container(app::panel_bar(
+            &self.core.applet,
+            &self.snapshot,
+            bar,
+            self.snapshot.stale,
+            self.style,
+        ))
+        .padding([6, 12])
+        .class(cosmic::theme::Container::Background);
+        widget::Column::new()
+            .spacing(12)
+            .padding(20)
+            .push(panel)
+            .push(popup)
+            .into()
     }
 }

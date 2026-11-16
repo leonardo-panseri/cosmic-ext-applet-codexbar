@@ -9,14 +9,14 @@ use std::time::{Duration, Instant};
 
 use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
 use cosmic::iced::widget::{stack, svg};
-use cosmic::iced::{Alignment, Length, Limits, Subscription, keyboard, window::Id};
+use cosmic::iced::{Alignment, Border, Color, Length, Limits, Subscription, keyboard, window::Id};
 use cosmic::prelude::*;
-use cosmic::widget::{self, icon};
+use cosmic::widget::{self, icon, segmented_button};
 
 use crate::backend::{self, Backend, BackendError};
-use crate::config::{self, Config};
+use crate::config::{self, Config, PanelStyle};
 use crate::guidance::{self, Autostart, TrayPrompt};
-use crate::snapshot::{Bar, Snapshot};
+use crate::snapshot::{Bar, Meter, Snapshot};
 use crate::{icons, popup};
 
 /// At login the applet and the desktop app start together, so failures in this window keep
@@ -175,12 +175,16 @@ impl Connection {
 }
 
 /// What the panel button shows (plan §4.2).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Panel<'a> {
     /// The app icon, with an optional badge in its corner.
     Icon(Option<Badge>),
     /// Bar entries or the summary, after a `!` when the snapshot is stale. Never [`Bar::Empty`].
-    Bar { bar: Bar<'a>, stale: bool },
+    Bar {
+        snapshot: &'a Snapshot,
+        bar: Bar<'a>,
+        stale: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,14 +196,16 @@ enum Badge {
 }
 
 impl<'a> Panel<'a> {
-    fn new(state: &'a State, horizontal: bool) -> Self {
+    /// `hidden`: the providers the user turned off on the popup's panel page.
+    fn new(state: &'a State, horizontal: bool, hidden: &[String]) -> Self {
         let snapshot = match state {
             State::Connecting => return Self::Icon(None),
             State::Unavailable(_) | State::Incompatible => return Self::Icon(Some(Badge::Warning)),
             State::Connected(snapshot) => snapshot,
         };
-        match snapshot.bar() {
+        match snapshot.bar(hidden) {
             bar @ (Bar::Entries { .. } | Bar::Summary(_)) if horizontal => Self::Bar {
+                snapshot,
                 bar,
                 stale: snapshot.stale,
             },
@@ -222,6 +228,10 @@ pub struct AppModel {
     config: Config,
     /// The popup's selected tab, kept while the applet runs. `None` selects the first entry.
     provider: Option<String>,
+    /// The popup shows the panel page instead of the tabs, until it closes.
+    panel_page: bool,
+    /// The panel page's style choice, kept in step with `config.panel_style`.
+    styles: segmented_button::SingleSelectModel,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +248,12 @@ pub enum Message {
     Open(backend::Window),
     /// A provider's tab in the popup.
     SelectProvider(String),
+    /// A provider's toggle on the popup's panel page.
+    ShowInPanel(String, bool),
+    /// The panel button in the popup's header, or the back button on the panel page.
+    TogglePanelPage,
+    /// A segment of the style choice on the panel page.
+    ChoosePanelStyle(segmented_button::Entity),
     /// The left or right arrow in the popup.
     SwitchProvider(popup::Step),
     /// **Check again** in the `Unavailable` popup.
@@ -286,9 +302,11 @@ impl cosmic::Application for AppModel {
             popup: None,
             autostart: Autostart::default(),
             tray: TrayPrompt::new(config.tray_prompt_dismissed),
+            styles: popup::style_model(config.panel_style),
             config_handler,
             config,
             provider: None,
+            panel_page: false,
         };
         let task = if app.connection.tick() {
             app.poll()
@@ -318,15 +336,30 @@ impl cosmic::Application for AppModel {
 
     fn view(&self) -> Element<'_, Self::Message> {
         let applet = &self.core.applet;
-        let button = match Panel::new(self.connection.state(), applet.is_horizontal()) {
+        let panel = Panel::new(
+            self.connection.state(),
+            applet.is_horizontal(),
+            &self.config.hidden_providers,
+        );
+        let button = match panel {
             Panel::Icon(badge) => applet.button_from_element(self.app_icon(badge), true),
-            Panel::Bar { bar, stale } => {
+            Panel::Bar {
+                snapshot,
+                bar,
+                stale,
+            } => {
                 // As `applet.text_button`, which takes only a single text.
                 let (major_padding, minor_padding) = applet.suggested_padding(true);
                 let height = applet.suggested_size(true).1 + 2 * minor_padding;
                 widget::button::custom(
-                    widget::layer_container(self.bar(bar, stale))
-                        .center_y(Length::Fixed(f32::from(height))),
+                    widget::layer_container(panel_bar(
+                        applet,
+                        snapshot,
+                        bar,
+                        stale,
+                        self.config.panel_style,
+                    ))
+                    .center_y(Length::Fixed(f32::from(height))),
                 )
                 .padding([0, major_padding])
                 .class(cosmic::theme::Button::AppletIcon)
@@ -345,6 +378,11 @@ impl cosmic::Application for AppModel {
             State::Connected(snapshot) => popup::view(
                 snapshot,
                 self.provider.as_deref(),
+                popup::PanelSettings {
+                    open: self.panel_page,
+                    hidden: &self.config.hidden_providers,
+                    styles: &self.styles,
+                },
                 self.autostart.banner(),
                 self.tray.banner(),
             ),
@@ -352,7 +390,10 @@ impl cosmic::Application for AppModel {
             State::Unavailable(why) => guidance::unavailable(*why),
             State::Incompatible => guidance::incompatible(),
         };
-        self.core.applet.popup_container(content).into()
+        self.core
+            .applet
+            .popup_container(popup::backdrop(content))
+            .into()
     }
 
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
@@ -395,6 +436,9 @@ impl cosmic::Application for AppModel {
                 return Task::batch([open, self.close_popup()]);
             }
             Message::SelectProvider(provider) => self.provider = Some(provider),
+            Message::ShowInPanel(..) | Message::TogglePanelPage | Message::ChoosePanelStyle(_) => {
+                self.update_panel(message);
+            }
             Message::SwitchProvider(step) => {
                 if let State::Connected(snapshot) = self.connection.state() {
                     self.provider = popup::adjacent(snapshot, self.provider.as_deref(), step)
@@ -421,6 +465,7 @@ impl cosmic::Application for AppModel {
                 } else {
                     let new_id = Id::unique();
                     self.popup.replace(new_id);
+                    self.panel_page = false;
                     let mut popup_settings = self.core.applet.get_popup_settings(
                         self.core.main_window_id().unwrap(),
                         new_id,
@@ -504,6 +549,7 @@ impl AppModel {
             }
             Message::ConfigChanged(config) => {
                 self.tray.stored(config.tray_prompt_dismissed);
+                popup::select_style(&mut self.styles, config.panel_style);
                 self.config = config;
             }
             _ => {}
@@ -525,6 +571,44 @@ impl AppModel {
         };
         if let Err(why) = self.config.set_tray_prompt_dismissed(handler, true) {
             eprintln!("can't store the tray prompt's answer: {why}");
+        }
+    }
+
+    /// Stores a provider's toggle from the panel page. The config watch then tells the applet on
+    /// any other panel.
+    fn show_in_panel(&mut self, provider: &str, shown: bool) {
+        let hidden = with_shown(&self.config.hidden_providers, provider, shown);
+        let Some(handler) = &self.config_handler else {
+            self.config.hidden_providers = hidden;
+            return;
+        };
+        if let Err(why) = self.config.set_hidden_providers(handler, hidden) {
+            eprintln!("can't store which providers the panel shows: {why}");
+        }
+    }
+
+    /// The messages from the popup's panel page.
+    fn update_panel(&mut self, message: Message) {
+        match message {
+            Message::ShowInPanel(provider, shown) => self.show_in_panel(&provider, shown),
+            Message::TogglePanelPage => self.panel_page = !self.panel_page,
+            Message::ChoosePanelStyle(item) => {
+                if let Some(style) = popup::style_of(&self.styles, item) {
+                    self.styles.activate(item);
+                    self.set_panel_style(style);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn set_panel_style(&mut self, style: PanelStyle) {
+        let Some(handler) = &self.config_handler else {
+            self.config.panel_style = style;
+            return;
+        };
+        if let Err(why) = self.config.set_panel_style(handler, style) {
+            eprintln!("can't store the panel style: {why}");
         }
     }
 
@@ -566,36 +650,141 @@ impl AppModel {
         .height(Length::Fixed(f32::from(size)))
         .into()
     }
+}
 
-    /// The horizontal panel text: each bar entry's logo (or tag) and text, separated by `·`,
-    /// then `+N` for entries that didn't fit.
-    fn bar<'a>(&'a self, bar: Bar<'a>, stale: bool) -> Element<'a, Message> {
-        let applet = &self.core.applet;
-        let mut row = widget::Row::new().spacing(4).align_y(Alignment::Center);
-        if stale {
-            row = row.push(applet.text("!"));
-        }
-        match bar {
-            Bar::Entries { entries, more } => {
-                for (i, entry) in entries.iter().enumerate() {
-                    if i > 0 {
-                        row = row.push(applet.text("·"));
-                    }
-                    row = row.push(match icons::provider(&entry.provider) {
-                        Some(logo) => Element::from(icon::icon(logo).size(self.icon_size())),
-                        None => applet.text(entry.tag.as_str()).into(),
-                    });
+/// The horizontal panel text: each bar entry's logo (or tag), then its windows as small bars and
+/// its text as `shows` says, separated by `·`, then `+N` for entries that didn't fit. A provider
+/// without windows, for example one that failed, shows its text even with bars only.
+pub fn panel_bar<'a>(
+    applet: &'a cosmic::applet::Context,
+    snapshot: &'a Snapshot,
+    bar: Bar<'a>,
+    stale: bool,
+    shows: PanelStyle,
+) -> Element<'a, Message> {
+    let icon_size = applet.suggested_size(true).0;
+    let mut row = widget::Row::new().spacing(4).align_y(Alignment::Center);
+    if stale {
+        row = row.push(applet.text("!"));
+    }
+    match bar {
+        Bar::Entries { entries, more } => {
+            for (i, entry) in entries.iter().enumerate() {
+                if i > 0 {
+                    row = row.push(applet.text("·"));
+                }
+                row = row.push(match icons::provider(&entry.provider) {
+                    Some(logo) => Element::from(icon::icon(logo).size(icon_size)),
+                    None => applet.text(entry.tag.as_str()).into(),
+                });
+                let meters = shows
+                    .bars()
+                    .then(|| meters(snapshot.meters(&entry.provider), icon_size))
+                    .flatten();
+                let text = shows.percent() || meters.is_none();
+                row = row.push_maybe(meters);
+                if text {
                     row = row.push(applet.text(entry.text.as_str()));
                 }
-                if more > 0 {
-                    row = row.push(applet.text(format!("+{more}")));
-                }
             }
-            Bar::Summary(summary) => row = row.push(applet.text(summary)),
-            Bar::Empty => {}
+            if more > 0 {
+                row = row.push(applet.text(format!("+{more}")));
+            }
         }
-        row.into()
+        Bar::Summary(summary) => row = row.push(applet.text(summary)),
+        Bar::Empty => {}
     }
+    row.into()
+}
+
+/// A provider's windows as small stacked bars, sized after the panel's icons. `None` without
+/// windows, for example when the provider failed.
+fn meters<'a>(meters: Vec<Meter>, icon_size: u16) -> Option<Element<'a, Message>> {
+    if meters.is_empty() {
+        return None;
+    }
+    let (girth, gap) = meter_size(icon_size, meters.len());
+    let width = (f32::from(icon_size) * 1.5).round();
+    let column = meters
+        .into_iter()
+        .fold(widget::Column::new().spacing(gap), |column, value| {
+            column.push(meter(value, width, girth))
+        });
+    Some(column.into())
+}
+
+/// The thickness of each bar and the gap between them, so `count` bars fit in an icon's height:
+/// at 16 px, three 4 px bars with 2 px gaps. Fewer bars stay as thin as that.
+#[allow(clippy::cast_precision_loss)] // At most three bars.
+fn meter_size(icon_size: u16, count: usize) -> (f32, f32) {
+    let size = f32::from(icon_size);
+    let gap = (size / 8.0).round().max(1.0);
+    let count = count.max(1) as f32;
+    let girth = ((size - gap * (count - 1.0)) / count)
+        .floor()
+        .min((size / 4.0).round())
+        .max(2.0);
+    (girth, gap)
+}
+
+/// `hidden` with `provider` taken out when `shown`, or added when not.
+pub fn with_shown(hidden: &[String], provider: &str, shown: bool) -> Vec<String> {
+    let mut hidden: Vec<String> = hidden
+        .iter()
+        .filter(|hidden| *hidden != provider)
+        .cloned()
+        .collect();
+    if !shown {
+        hidden.push(provider.to_owned());
+    }
+    hidden
+}
+
+/// One small bar: a track as wide as `width`, filled to `meter.value` percent in the accent
+/// colour, or the destructive colour when the window has a warning.
+fn meter<'a>(meter: Meter, width: f32, girth: f32) -> Element<'a, Message> {
+    let filled = popup::portion(popup::percent(meter.value));
+    let fill = (filled > 0).then(|| {
+        widget::container(widget::Space::new())
+            .width(Length::FillPortion(filled))
+            .height(Length::Fill)
+            .class(cosmic::theme::Container::custom(move |theme| {
+                let cosmic = theme.cosmic();
+                let color = if meter.warning {
+                    cosmic.destructive_color()
+                } else {
+                    cosmic.accent_color()
+                };
+                widget::container::Style {
+                    background: Some(Color::from(color).into()),
+                    border: Border {
+                        radius: (girth / 2.0).into(),
+                        ..Border::default()
+                    },
+                    ..widget::container::Style::default()
+                }
+            }))
+    });
+    // Without the zero-width part, which iced would lay out as filling the row.
+    let row = widget::Row::new()
+        .push_maybe(fill)
+        .push_maybe(popup::spacer(1000 - filled));
+    widget::container(row)
+        .width(Length::Fixed(width))
+        .height(Length::Fixed(girth))
+        .class(cosmic::theme::Container::custom(move |theme| {
+            let mut track: Color = theme.cosmic().on_bg_color().into();
+            track.a = 0.25;
+            widget::container::Style {
+                background: Some(track.into()),
+                border: Border {
+                    radius: (girth / 2.0).into(),
+                    ..Border::default()
+                },
+                ..widget::container::Style::default()
+            }
+        }))
+        .into()
 }
 
 /// Opens a web page with `xdg-open`. Inside the Flatpak that is flatpak-xdg-utils, which goes
@@ -857,7 +1046,7 @@ mod tests {
     fn panel_shows_the_app_icon_until_connected() {
         for horizontal in [true, false] {
             assert_eq!(
-                Panel::new(&State::Connecting, horizontal),
+                Panel::new(&State::Connecting, horizontal, &[]),
                 Panel::Icon(None)
             );
             for state in [
@@ -866,7 +1055,7 @@ mod tests {
                 State::Incompatible,
             ] {
                 assert_eq!(
-                    Panel::new(&state, horizontal),
+                    Panel::new(&state, horizontal, &[]),
                     Panel::Icon(Some(Badge::Warning))
                 );
             }
@@ -881,9 +1070,10 @@ mod tests {
         let Panel::Bar {
             bar: Bar::Entries { entries, more },
             stale: false,
-        } = Panel::new(&state, true)
+            ..
+        } = Panel::new(&state, true, &[])
         else {
-            panic!("{:?}", Panel::new(&state, true));
+            panic!("{:?}", Panel::new(&state, true, &[]));
         };
         assert_eq!(entries.len(), 2);
         assert_eq!(more, 1);
@@ -892,13 +1082,52 @@ mod tests {
             summary: "CL 90%".into(),
             ..Snapshot::default()
         });
-        assert_eq!(
-            Panel::new(&summary_only, true),
+        assert!(matches!(
+            Panel::new(&summary_only, true, &[]),
             Panel::Bar {
                 bar: Bar::Summary("CL 90%"),
-                stale: false
+                stale: false,
+                ..
             }
-        );
+        ));
+    }
+
+    #[test]
+    fn hiding_every_provider_shows_the_app_icon() {
+        let state = State::Connected(two_providers());
+        let hidden = ["claude".to_owned(), "codex".to_owned()];
+        assert_eq!(Panel::new(&state, true, &hidden), Panel::Icon(None));
+        assert!(matches!(
+            Panel::new(&state, true, &hidden[..1]),
+            Panel::Bar {
+                bar: Bar::Entries { more: 0, .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn bars_fit_in_an_icon() {
+        assert_eq!(meter_size(16, 3), (4.0, 2.0));
+        assert_eq!(meter_size(16, 2), (4.0, 2.0));
+        assert_eq!(meter_size(24, 3), (6.0, 3.0));
+        assert_eq!(meter_size(32, 3), (8.0, 4.0));
+        for size in [12, 16, 20, 24, 32] {
+            let (girth, gap) = meter_size(size, 3);
+            assert!(3.0 * girth + 2.0 * gap <= f32::from(size), "{size}");
+        }
+    }
+
+    #[test]
+    fn show_in_panel_adds_and_removes_hidden_providers() {
+        let hidden = with_shown(&[], "claude", false);
+        assert_eq!(hidden, ["claude"]);
+        // Twice is still once.
+        assert_eq!(with_shown(&hidden, "claude", false), ["claude"]);
+        let both = with_shown(&hidden, "codex", false);
+        assert_eq!(both, ["claude", "codex"]);
+        assert_eq!(with_shown(&both, "claude", true), ["codex"]);
+        assert_eq!(with_shown(&[], "gemini", true), Vec::<String>::new());
     }
 
     #[test]
@@ -908,26 +1137,29 @@ mod tests {
             ..two_providers()
         });
         assert!(matches!(
-            Panel::new(&state, true),
+            Panel::new(&state, true, &[]),
             Panel::Bar { stale: true, .. }
         ));
-        assert_eq!(Panel::new(&state, false), Panel::Icon(Some(Badge::Stale)));
+        assert_eq!(
+            Panel::new(&state, false, &[]),
+            Panel::Icon(Some(Badge::Stale))
+        );
     }
 
     #[test]
     fn vertical_panel_and_empty_snapshots_show_the_app_icon() {
         let connected = State::Connected(two_providers());
-        assert_eq!(Panel::new(&connected, false), Panel::Icon(None));
+        assert_eq!(Panel::new(&connected, false, &[]), Panel::Icon(None));
 
         // The first seconds after the desktop app starts.
         let empty = State::Connected(Snapshot::default());
-        assert_eq!(Panel::new(&empty, true), Panel::Icon(None));
+        assert_eq!(Panel::new(&empty, true, &[]), Panel::Icon(None));
         let empty_stale = State::Connected(Snapshot {
             stale: true,
             ..Snapshot::default()
         });
         assert_eq!(
-            Panel::new(&empty_stale, true),
+            Panel::new(&empty_stale, true, &[]),
             Panel::Icon(Some(Badge::Stale))
         );
     }

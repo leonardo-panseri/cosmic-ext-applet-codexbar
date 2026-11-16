@@ -25,6 +25,7 @@ unknown-provider = Unknown provider
 no-providers = No providers are turned on. Choose them in CodexBar Settings.
 usage = Usage
 no-pace = No pace estimate for this window
+pace-detail = { $used }% used · { $expected }% expected by now
 credits = Credits
 credits-remaining = Remaining
 extra-usage = Extra usage
@@ -38,6 +39,13 @@ unavailable = Unavailable
 refresh = Refresh
 usage-and-spend = Usage & Spend
 settings = Settings
+panel-button = Panel button
+panel-shows = Show
+panel-style-bars = Bars
+panel-style-percent = Percent
+panel-style-both = Both
+providers = Providers
+bar-limit = CodexBar puts only its first { $count } providers in the bar. To choose among all of them, set Providers in the bar to All in CodexBar Settings.
 
 ## Banners (Connected)
 

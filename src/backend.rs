@@ -323,7 +323,7 @@ mod tests {
     async fn live_snapshot_and_autostart_status() {
         let backend = Backend::from_env();
         let snapshot = backend.snapshot(false).await.unwrap();
-        println!("{:?}", snapshot.bar());
+        println!("{:?}", snapshot.bar(&[]));
         println!("autostart: {}", backend.autostart_status().await.unwrap());
     }
 

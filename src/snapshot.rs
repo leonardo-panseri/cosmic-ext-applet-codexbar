@@ -66,11 +66,11 @@ pub struct Snapshot {
 }
 
 /// What the horizontal panel button shows (plan §4.2), before staleness is applied.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Bar<'a> {
-    /// The bar entries, then `+{more}` when `more > 0`.
+    /// The bar entries the user hasn't hidden, then `+{more}` when `more > 0`.
     Entries {
-        entries: &'a [BarEntry],
+        entries: Vec<&'a BarEntry>,
         more: usize,
     },
     /// Older backends have no bar entries, only the preformatted summary.
@@ -79,18 +79,70 @@ pub enum Bar<'a> {
     Empty,
 }
 
+/// How many of a provider's windows the panel draws as bars: three fit in an icon's height.
+const METERS: usize = 3;
+
+/// One of the small bars next to a provider in the panel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Meter {
+    /// `displayValue`, so the bar fills as the popup's bar does.
+    pub value: f64,
+    pub warning: bool,
+}
+
 impl Snapshot {
-    pub fn bar(&self) -> Bar<'_> {
+    /// The panel's content, without the providers in `hidden`. `more` counts the entries the
+    /// desktop app left out of the bar; the hidden ones were left out on purpose and aren't
+    /// counted. The summary of older backends can't be filtered.
+    pub fn bar(&self, hidden: &[String]) -> Bar<'_> {
+        let shown = |provider: &str| !hidden.iter().any(|hidden| hidden == provider);
         if !self.bar_entries.is_empty() {
-            Bar::Entries {
-                entries: &self.bar_entries,
-                more: self.entries.len().saturating_sub(self.bar_entries.len()),
+            let entries: Vec<_> = self
+                .bar_entries
+                .iter()
+                .filter(|bar| shown(&bar.provider))
+                .collect();
+            if entries.is_empty() {
+                return Bar::Empty;
             }
+            let more = self
+                .entries
+                .iter()
+                .filter(|entry| shown(&entry.provider))
+                .filter(|entry| {
+                    !self
+                        .bar_entries
+                        .iter()
+                        .any(|bar| bar.provider == entry.provider)
+                })
+                .count();
+            Bar::Entries { entries, more }
         } else if !self.summary.is_empty() {
             Bar::Summary(&self.summary)
         } else {
             Bar::Empty
         }
+    }
+
+    /// The provider's first three windows for the panel's bars, such as 5 hour, 7 day and a
+    /// scoped cap like "Fable only". Scoped caps come after the windows that cover the whole
+    /// provider, so they're the ones left out when there are more.
+    pub fn meters(&self, provider: &str) -> Vec<Meter> {
+        let windows = self
+            .entries
+            .iter()
+            .find(|entry| entry.provider == provider)
+            .map_or(&[][..], |entry| &entry.windows);
+        let general = windows.iter().filter(|window| !window.scoped);
+        let scoped = windows.iter().filter(|window| window.scoped);
+        general
+            .chain(scoped)
+            .take(METERS)
+            .map(|window| Meter {
+                value: window.display_value,
+                warning: window.warning,
+            })
+            .collect()
     }
 }
 
@@ -315,20 +367,65 @@ mod tests {
         ));
     }
 
+    fn tags_and_more(bar: Bar<'_>) -> (Vec<&str>, usize) {
+        let Bar::Entries { entries, more } = bar else {
+            panic!("{bar:?}")
+        };
+        (entries.iter().map(|e| e.tag.as_str()).collect(), more)
+    }
+
     #[test]
     fn bar_shows_bar_entries_and_counts_the_rest() {
         let snapshot = fixture("provider-error");
-        let Bar::Entries { entries, more } = snapshot.bar() else {
-            panic!("{:?}", snapshot.bar())
-        };
-        assert_eq!(
-            entries.iter().map(|e| e.tag.as_str()).collect::<Vec<_>>(),
-            ["CL", "CX"]
-        );
-        assert_eq!(more, 1);
+        assert_eq!(tags_and_more(snapshot.bar(&[])), (vec!["CL", "CX"], 1));
 
         let snapshot = fixture("two-providers");
-        assert!(matches!(snapshot.bar(), Bar::Entries { more: 0, .. }));
+        assert!(matches!(snapshot.bar(&[]), Bar::Entries { more: 0, .. }));
+    }
+
+    #[test]
+    fn hidden_providers_leave_the_bar_without_counting_as_more() {
+        let snapshot = fixture("provider-error");
+        let hidden = |ids: &[&str]| ids.iter().map(|&id| id.to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            tags_and_more(snapshot.bar(&hidden(&["claude"]))),
+            (vec!["CX"], 1)
+        );
+        // Gemini isn't in the bar entries, so hiding it only drops the `+1`.
+        assert_eq!(
+            tags_and_more(snapshot.bar(&hidden(&["gemini"]))),
+            (vec!["CL", "CX"], 0)
+        );
+        assert_eq!(snapshot.bar(&hidden(&["claude", "codex"])), Bar::Empty);
+    }
+
+    #[test]
+    fn meters_are_the_first_three_windows_scoped_caps_last() {
+        let snapshot = fixture("two-providers");
+        let values = |provider| -> Vec<f64> {
+            snapshot
+                .meters(provider)
+                .iter()
+                .map(|meter| meter.value)
+                .collect()
+        };
+        // Claude's third window is the "Fable only" scoped cap.
+        assert_eq!(values("claude"), [90.0, 84.0, 93.0]);
+        assert_eq!(values("codex"), [100.0, 100.0]);
+        assert_eq!(values("gemini"), Vec::<f64>::new());
+
+        let scoped_first = parse(
+            br#"{"schemaVersion":1,"entries":[{"provider":"x","windows":[
+                {"displayValue":5,"scoped":true},{"displayValue":10,"warning":true},
+                {"displayValue":20},{"displayValue":30}]}]}"#,
+        )
+        .unwrap();
+        let meters = scoped_first.meters("x");
+        assert_eq!(
+            meters.iter().map(|meter| meter.value).collect::<Vec<_>>(),
+            [10.0, 20.0, 30.0]
+        );
+        assert!(meters[0].warning && !meters[1].warning);
     }
 
     #[test]
@@ -343,13 +440,13 @@ mod tests {
         .unwrap();
         value.as_object_mut().unwrap().remove("barEntries");
         let snapshot = parse(value.to_string().as_bytes()).unwrap();
-        assert_eq!(snapshot.bar(), Bar::Summary("CL 90%  ·  CX 100%  +1"));
+        assert_eq!(snapshot.bar(&[]), Bar::Summary("CL 90%  ·  CX 100%  +1"));
     }
 
     #[test]
     fn bar_is_empty_while_the_desktop_app_starts() {
         let snapshot =
             parse(br#"{"schemaVersion":1,"summary":"","barEntries":[],"entries":[]}"#).unwrap();
-        assert_eq!(snapshot.bar(), Bar::Empty);
+        assert_eq!(snapshot.bar(&[]), Bar::Empty);
     }
 }
