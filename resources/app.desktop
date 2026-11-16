@@ -1,13 +1,13 @@
 [Desktop Entry]
-Name=Cosmic Ext Applet Codexbar
-Comment=CodexBar applet for the COSMIC™ desktop
+Name=CodexBar
+Comment=AI usage from CodexBar for Linux in the COSMIC™ panel
 Type=Application
-Icon=com.github.leonardo-panseri.cosmic-ext-applet-codexbar
+Icon=io.github.leonardo_panseri.cosmic-ext-applet-codexbar
 Exec=cosmic-ext-applet-codexbar %F
 Terminal=false
 StartupNotify=true
 Categories=COSMIC
-Keywords=COSMIC
+Keywords=COSMIC;CodexBar;AI;Usage;Quota;
 NoDisplay=true
 X-CosmicApplet=true
 X-CosmicHoverPopup=Auto

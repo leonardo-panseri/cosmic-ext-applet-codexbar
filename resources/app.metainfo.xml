@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>com.github.leonardo-panseri.cosmic-ext-applet-codexbar</id>
+  <id>io.github.leonardo_panseri.cosmic-ext-applet-codexbar</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MPL-2.0</project_license>
-  <name>Cosmic Ext Applet Codexbar</name>
-  <summary>CodexBar applet for the COSMIC™ desktop</summary>
+  <name>CodexBar</name>
+  <summary>AI usage from CodexBar for Linux in the COSMIC™ panel</summary>
   <icon type="remote" width="64" height="64" scale="1">
     https://github.com/leonardo-panseri/cosmic-ext-applet-codexbar.git/raw/main/resources/icons/hicolor/scalable/apps/icon.svg
   </icon>
   <url type="vcs-browser">https://github.com/leonardo-panseri/cosmic-ext-applet-codexbar.git</url>
-  <launchable type="desktop-id">com.github.leonardo-panseri.cosmic-ext-applet-codexbar.desktop</launchable>
+  <launchable type="desktop-id">io.github.leonardo_panseri.cosmic-ext-applet-codexbar.desktop</launchable>
   <provides>
     <id>com.system76.CosmicApplet</id>
     <binaries>
