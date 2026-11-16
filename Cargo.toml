@@ -26,6 +26,10 @@ features = ["fluent-system", "desktop-requester"]
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic.git"
 # See https://github.com/pop-os/libcosmic/blob/master/Cargo.toml for available features.
+# The same set as pop-os/cosmic-applets. No `wgpu`: tiny-skia uses half the memory (ADR 0001,
+# P0 item 7). No `x11`: the panel is Wayland-only. No `a11y`: libcosmic routes an accessibility
+# click only to `on_press`, never to the `on_press_down` the panel button uses.
+default-features = false
 features = [
     # Applet support
     "applet",
@@ -38,7 +42,7 @@ features = [
     "tokio",
     # Add Wayland support to winit
     "wayland",
-    # Windowing support for X11, Windows, Mac, & Redox
+    # Windowing support
     "winit",
 ]
 

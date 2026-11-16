@@ -61,6 +61,30 @@ install:
 uninstall:
     rm {{bin-dst}} {{desktop-dst}} {{icon-dst}}
 
+# Copies the provider logos and upstream's licence from a CodexBar checkout (plan D6)
+sync-icons upstream:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    upstream='{{ join(invocation_directory(), upstream) }}'
+    icons="$upstream/Sources/CodexBar/Resources"
+    commit=$(git -C "$upstream" rev-parse --short=9 HEAD)
+    mkdir -p resources/providers
+    rm -f resources/providers/ProviderIcon-*.svg
+    cp "$icons"/ProviderIcon-*.svg resources/providers/
+    {
+        echo '# Third-party notices'
+        echo
+        echo 'The provider logos in `resources/providers/` are copied from'
+        echo "[steipete/CodexBar](https://github.com/steipete/CodexBar) \`$commit\`,"
+        echo '`Sources/CodexBar/Resources/ProviderIcon-*.svg`, by `just sync-icons`.'
+        echo 'They are used under the MIT licence:'
+        echo
+        echo '```text'
+        cat "$upstream/LICENSE"
+        echo '```'
+    } > resources/THIRD_PARTY_NOTICES.md
+    echo "Copied $(ls resources/providers | wc -l) logos from CodexBar $commit"
+
 # Vendor dependencies locally
 vendor:
     mkdir -p .cargo

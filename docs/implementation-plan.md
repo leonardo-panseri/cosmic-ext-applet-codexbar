@@ -406,6 +406,42 @@ From P0:
 **Check:** `just run` against the real desktop app. Stop the app with `codexbar-linux --quit`: after 5 s the panel
 shows the warning badge, and when the app is started again it recovers on its own.
 
+**Done 2026-11-16.** 15 new unit tests for the state machine, the poll schedule and the panel content, plus 4 for
+the icons; the real-panel check is still to do. Decisions:
+
+- **Press down.** The popup opens on `on_press_down`, like COSMIC's own applets and libcosmic's
+  `applet.text_button`.
+- **`X-OverflowPriority=10`** in `resources/app.desktop`, the value of most cosmic-applets. Without it
+  cosmic-panel force-shrinks the applet when it runs out of room, which would clip the text; with it the applet
+  moves to the overflow popup instead.
+- **No `a11y`.** libcosmic's feature set is now exactly cosmic-applets': `default-features = false` with
+  `applet`, `applet-token`, `dbus-config`, `multi-window`, `tokio`, `wayland` and `winit`. libcosmic routes an
+  accessibility click only to `on_press`, never to `on_press_down`, so `a11y` would cost memory without making
+  the button usable.
+- **Logos.** 110 `ProviderIcon-*.svg` from upstream `1f6da9bec` in `resources/providers/`, embedded by
+  `icons.rs`. Provider ids other than `[A-Za-z0-9_-]+` get no logo, so a snapshot can't name a path.
+  `just sync-icons <checkout>` copies them and rewrites `resources/THIRD_PARTY_NOTICES.md` with the commit and
+  upstream's licence.
+
+Differences from the description above:
+
+- The pure logic is `app::Connection` (D7 state plus poll schedule, driven with explicit `Instant`s) and
+  `app::Panel` (what the button shows). The subscription ticks every 1 s only while fast polling, so the applet
+  doesn't wake every second otherwise.
+- A refresh that finishes while a poll is in flight queues another poll for when it returns, since the reply in
+  flight may predate the refresh. A refresh the desktop app rejects, or that can't connect, polls once but doesn't
+  start fast polling.
+- `Incompatible` replies (also `TooLarge`, and `Rejected`) show at once, without waiting out the grace period:
+  a reply came back, so waiting can't help. `Timeout` counts as "not responding".
+- After the first snapshot there's no grace: one failed poll shows `Unavailable`.
+- Badges are the `dialog-warning-symbolic` icon in the theme's warning colour for `Unavailable` and
+  `Incompatible`, and `emblem-important-symbolic` in the text colour for a stale snapshot, at half the icon size
+  in the bottom-right corner. An empty but stale snapshot shows the app icon with the stale badge.
+- The placeholder popup now shows the D7 status line ("Connecting to CodexBar…", "isn't running", "isn't
+  responding", the `Incompatible` text). P3 and P4 replace it.
+- Backend methods for P3/P4 (`open`, `autostart_status`, `enable_autostart`, `hide_tray`) and the test-only
+  `socket()` keep narrow `#[allow(dead_code)]`s with a comment.
+
 ### P3 — Popup
 
 The status line, provider cards, footer actions and keyboard shortcuts from §4.3.

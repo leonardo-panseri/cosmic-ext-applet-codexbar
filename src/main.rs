@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod app;
-// The panel and popup start using these in P2 (docs/implementation-plan.md).
-#[allow(dead_code)]
 mod backend;
 mod i18n;
-#[allow(dead_code)]
+mod icons;
 mod snapshot;
 
 fn main() -> cosmic::iced::Result {
