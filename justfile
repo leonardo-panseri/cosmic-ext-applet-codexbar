@@ -133,6 +133,23 @@ flatpak-sources:
     fi
     "$tools/venv/bin/python" -I "$script" Cargo.lock -o flatpak/cargo-sources.json
 
+# Writes the pop-os/cosmic-flatpak copy of the manifest for a pushed tag into build-flatpak/cosmic-flatpak/:
+# the dir source becomes the tag and its commit, and cargo-sources.json is copied unchanged.
+# COSMIC_FLATPAK_URL overrides the repository URL, for a local test build before the tag is pushed.
+cosmic-flatpak tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(git rev-parse --verify '{{tag}}^{commit}')
+    url="${COSMIC_FLATPAK_URL:-https://github.com/leonardo-panseri/cosmic-ext-applet-codexbar.git}"
+    out='{{flatpak-build-dir}}/cosmic-flatpak/app/{{appid}}'
+    rm -rf "$out"
+    mkdir -p "$out"
+    jq --arg url "$url" --arg tag '{{tag}}' --arg commit "$commit" \
+        '.modules[0].sources[0] = {type: "git", url: $url, tag: $tag, commit: $commit}' \
+        {{flatpak-manifest}} > "$out/{{appid}}.json"
+    cp flatpak/cargo-sources.json "$out/"
+    echo "Wrote $out for {{tag}} ($commit)"
+
 # Vendor dependencies locally
 vendor:
     mkdir -p .cargo

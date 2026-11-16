@@ -645,6 +645,19 @@ Flathub's requirements reject apps that "rely on host components … for core fu
 cosmic-flatpak exists for applets that don't fit Flathub. The PR description should explain this, and the
 README should say that CodexBar for Linux is required.
 
+**Prepared 2026-11-16.** Not yet pushed or submitted. Decisions:
+
+- **Release.** The metainfo has a `<release>` for 0.1.0, so `appstreamcli validate --pedantic` passes with no
+  issues. `Cargo.toml` was already at 0.1.0, so the tag is an annotated `0.1.0` on the release commit, made by
+  hand: `just tag` would stop on an empty commit.
+- **Manifest copy.** `just cosmic-flatpak <tag>` writes `build-flatpak/cosmic-flatpak/app/<id>/`: the manifest
+  with the `dir` source swapped for `{"type": "git", "url", "tag", "commit"}`, and `cargo-sources.json` copied
+  unchanged. `COSMIC_FLATPAK_URL` points it at a local clone, to test-build before the tag is pushed. Later
+  releases rerun it and open a PR that bumps the tag and commit.
+- **PR text.** cosmic-flatpak's PR template has contributors confirm that, apart from their own app source and
+  manifest, the PR has no LLM-generated content, descriptions included. The description is the maintainer's to
+  write.
+
 ### P7 — Maintenance (optional)
 
 A scheduled workflow that alerts when any of these change upstream:
