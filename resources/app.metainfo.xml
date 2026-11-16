@@ -44,6 +44,14 @@
       <image>https://raw.githubusercontent.com/leonardo-panseri/cosmic-ext-applet-codexbar/main/resources/screenshots/popup.png</image>
       <caption>Usage for two providers in the panel and the popup</caption>
     </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/leonardo-panseri/cosmic-ext-applet-codexbar/main/resources/screenshots/credits.png</image>
+      <caption>A tab per provider, with credits and local spending</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/leonardo-panseri/cosmic-ext-applet-codexbar/main/resources/screenshots/panel-page.png</image>
+      <caption>Choosing what the panel button shows</caption>
+    </screenshot>
   </screenshots>
   <categories>
     <category>COSMIC</category>

@@ -56,6 +56,7 @@ A [justfile](./justfile) is included for the [casey/just][just] command runner.
   the panel page)
 - `cargo test` runs the unit tests; `cargo test -- --ignored live` also queries a running CodexBar (read-only)
 - `just check --all-targets` runs clippy with pedantic lints; CI also runs `cargo fmt --check` and denies warnings
+- `just screenshots` regenerates the metainfo screenshots in `resources/screenshots/` from the test fixtures
 - `just flatpak-build` builds the working tree as a Flatpak; builder state stays in `.flatpak-builder/` and
   `build-flatpak/`, since `org.flatpak.Builder` has a private `/tmp`
 - `just flatpak-sources` regenerates `flatpak/cargo-sources.json`; run it whenever `Cargo.lock` changes

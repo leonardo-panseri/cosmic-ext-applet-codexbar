@@ -632,6 +632,9 @@ install, the panel and the P2–P4 checks in the sandbox are still to do. Decisi
 
 The `LICENSE` file has since been added (`c848508`), and `resources/screenshots/popup.png` was captured from the
 real panel, with the plan name and spending repainted as the fixtures' scrubbed values.
+Since 2026-11-16 it's generated instead, with `credits.png` and `panel-page.png`, by `just screenshots`
+(`tools/screenshots.py`), from the debug preview on the made-up `resources/screenshots/snapshot.json`; see
+`resources/screenshots/README.md`.
 
 ### P6 — Publish
 

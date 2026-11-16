@@ -61,6 +61,10 @@ install:
 uninstall:
     rm {{bin-dst}} {{desktop-dst}} {{icon-dst}}
 
+# Regenerates resources/screenshots/ from the test fixtures (needs a Wayland session)
+screenshots *names:
+    python3 tools/screenshots.py {{names}}
+
 # Copies the provider logos and upstream's licence from a CodexBar checkout (plan D6)
 sync-icons upstream:
     #!/usr/bin/env bash

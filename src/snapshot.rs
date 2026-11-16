@@ -314,6 +314,13 @@ mod tests {
     }
 
     #[test]
+    fn the_screenshot_snapshot_parses() {
+        let snapshot = parse(include_bytes!("../resources/screenshots/snapshot.json")).unwrap();
+        assert_eq!(snapshot.entries.len(), 2);
+        assert_eq!(snapshot.spending.len(), 2);
+    }
+
+    #[test]
     fn unknown_fields_are_ignored() {
         let json = br#"{"schemaVersion":1,"summary":"CL 90%","futureField":{"a":[1]},
             "entries":[{"provider":"claude","newThing":true,
