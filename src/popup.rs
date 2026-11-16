@@ -17,6 +17,7 @@ use cosmic::widget::{self, icon};
 
 use crate::app::Message;
 use crate::backend;
+use crate::guidance::{self, Banner};
 use crate::snapshot::{Entry, ExtraUsage, ResetCredits, Snapshot, Spending, Window};
 use crate::{fl, icons};
 
@@ -25,7 +26,21 @@ const LIST_MAX_HEIGHT: f32 = 520.0;
 const LOGO_SIZE: u16 = 20;
 const STATUS_DOT: f32 = 8.0;
 
-pub fn view(snapshot: &Snapshot) -> Element<'_, Message> {
+/// The `Connected` popup, with the autostart banner and the tray prompt under the status line
+/// when they show ([`crate::guidance`]).
+pub fn view<'a>(
+    snapshot: &'a Snapshot,
+    autostart: Option<Banner<'a>>,
+    tray: Option<Banner<'a>>,
+) -> Element<'a, Message> {
+    let banners: Vec<_> = [
+        autostart.map(guidance::autostart_banner),
+        tray.map(guidance::tray_banner),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
     let header = widget::Column::new()
         .spacing(2)
         .push(widget::text::heading(fl!("app-title")))
@@ -52,10 +67,18 @@ pub fn view(snapshot: &Snapshot) -> Element<'_, Message> {
         footer.push(applet::menu_button(widget::text::body(label)).on_press_maybe(message))
     });
 
-    widget::Column::new()
+    let mut popup = widget::Column::new()
         .spacing(8)
         .padding([8, 0])
-        .push(applet::padded_control(header))
+        .push(applet::padded_control(header));
+    if !banners.is_empty() {
+        popup = popup.push(
+            widget::Column::with_children(banners)
+                .spacing(8)
+                .padding([0, 12]),
+        );
+    }
+    popup
         .push(widget::container(widget::scrollable(cards)).max_height(LIST_MAX_HEIGHT))
         .push(applet::padded_control(
             widget::divider::horizontal::default(),

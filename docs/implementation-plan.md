@@ -491,6 +491,31 @@ Differences from the description above:
 removes the icon from COSMIC's status area and sets `"showTray": false` in `linux.json`. The prompt doesn't come back
 after a restart.
 
+**Done 2026-11-16.** `src/guidance.rs` draws the `Connecting`, `Unavailable` and `Incompatible` popups and the two
+`Connected` banners; `src/config.rs` holds `tray_prompt_dismissed`. 10 new unit tests for the wording, the banner
+states and the stored flag (against a config folder in a temp dir), plus 1 for **Check again**; the real-panel check
+is still to do. Decisions:
+
+- **Links** open by running `xdg-open` with `tokio::process` (tokio's `process` feature, no new crate), and the task
+  waits for it so it's reaped. libcosmic has no URL helper short of its `desktop` feature, which pulls in
+  `cosmic-launch` and zbus. Opening a link closes the popup.
+- **Guidance text** is §4.4's, in two paragraphs: the `NotRunning` or `NotResponding` paragraph, then the shared
+  **Start at login** and **Tray icon** one. The "isn't responding" paragraph says to quit CodexBar if it's still
+  open and open it again. The `Incompatible` popup links to the installation guide and to this applet's repository.
+- **Autostart** is checked when the state becomes `Connected` and whenever the popup opens. **Turn on** is disabled
+  until the status check that follows `autostart enable` returns, whether or not it succeeded. A status the desktop
+  app can't give (for example `Unknown command` from an older one) shows no banner.
+- **Errors** under a banner are the desktop app's `error` when `Rejected` gives one, otherwise a generic line. They
+  stay until the next click or the next time the popup opens.
+- **Stored flag:** `CosmicConfigEntry` version 1 under the app ID (`~/.config/cosmic/<app id>/v1`). The applet
+  watches it with `core.watch_config`, so answering the prompt in one panel's instance hides it in the others.
+  If the folder can't be opened, nothing is stored and the prompt comes back after a restart.
+
+Differences from the description above:
+
+- **Hide tray icon** stores the dismissal only when the desktop app accepts it. When it refuses, the prompt stays
+  with the reason, so the user can fix `linux.json` and try again, or click **Keep it**.
+
 ### P5 — Flatpak packaging
 
 **Manifest** (`flatpak/…json`), in the cosmic-flatpak format:

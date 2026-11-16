@@ -2,6 +2,8 @@
 
 mod app;
 mod backend;
+mod config;
+mod guidance;
 mod i18n;
 mod icons;
 mod popup;

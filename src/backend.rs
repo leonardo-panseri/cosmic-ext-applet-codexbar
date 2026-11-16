@@ -146,13 +146,11 @@ impl Backend {
     }
 
     /// Turns on start at login and returns the resulting state.
-    #[allow(dead_code)] // The autostart banner (P4).
     pub async fn enable_autostart(&self) -> Result<bool, BackendError> {
         self.autostart("enable").await
     }
 
     /// Hides the desktop app's own tray icon and saves that in its settings.
-    #[allow(dead_code)] // The tray prompt (P4).
     pub async fn hide_tray(&self) -> Result<(), BackendError> {
         self.command(&json!({"command": "configure", "settings": {"showTray": false}}))
             .await

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! The panel button, the poll loop and what the applet knows about the backend
-//! (`docs/implementation-plan.md` D7, §4.1 and §4.2). The `Connected` popup is in [`crate::popup`];
-//! the other states keep a placeholder until P4.
+//! (`docs/implementation-plan.md` D7, §4.1 and §4.2). The `Connected` popup is in [`crate::popup`],
+//! the other states' popups and the banners in [`crate::guidance`].
 
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -14,8 +14,10 @@ use cosmic::prelude::*;
 use cosmic::widget::{self, icon};
 
 use crate::backend::{self, Backend, BackendError};
+use crate::config::{self, Config};
+use crate::guidance::{self, Autostart, TrayPrompt};
 use crate::snapshot::{Bar, Snapshot};
-use crate::{fl, icons, popup};
+use crate::{icons, popup};
 
 /// At login the applet and the desktop app start together, so failures in this window keep
 /// the applet `Connecting` instead of flashing a warning.
@@ -49,6 +51,10 @@ pub enum Unavailable {
 }
 
 impl State {
+    pub fn is_connected(&self) -> bool {
+        matches!(self, Self::Connected(_))
+    }
+
     /// The state after a poll that finished `waited` after startup.
     fn after(self, result: Result<Snapshot, BackendError>, waited: Duration) -> Self {
         let unavailable = match result {
@@ -118,6 +124,11 @@ impl Connection {
     /// The popup opened. Poll with spending now, or as soon as the poll in flight returns.
     pub fn popup_opened(&mut self) -> bool {
         self.spending = true;
+        self.poll_soon()
+    }
+
+    /// **Check again** in the `Unavailable` popup.
+    pub fn check_again(&mut self) -> bool {
         self.poll_soon()
     }
 
@@ -203,10 +214,12 @@ pub struct AppModel {
     backend: Backend,
     connection: Connection,
     popup: Option<Id>,
-    /// Whether the desktop app starts at login, as of the last time the popup opened. `None`
-    /// until then, or when the desktop app couldn't say.
-    #[allow(dead_code)] // The autostart banner (P4) reads it.
-    autostart: Option<bool>,
+    /// Checked on connect and whenever the popup opens.
+    autostart: Autostart,
+    tray: TrayPrompt,
+    /// `None` when the config folder can't be opened: then nothing is remembered.
+    config_handler: Option<cosmic::cosmic_config::Config>,
+    config: Config,
 }
 
 #[derive(Debug, Clone)]
@@ -221,7 +234,21 @@ pub enum Message {
     Refreshed(Result<(), BackendError>),
     /// A popup footer button: ask the desktop app to open one of its windows.
     Open(backend::Window),
+    /// **Check again** in the `Unavailable` popup.
+    CheckAgain,
+    /// A link in the guidance: one of the `guidance` URLs.
+    OpenUrl(&'static str),
     AutostartChecked(Result<bool, BackendError>),
+    /// **Turn on** in the autostart banner.
+    TurnOnAutostart,
+    AutostartEnabled(Result<bool, BackendError>),
+    /// **Hide tray icon** in the tray prompt.
+    HideTray,
+    TrayHidden(Result<(), BackendError>),
+    /// **Keep it** in the tray prompt.
+    KeepTray,
+    /// The stored config changed, for example from the applet on another panel.
+    ConfigChanged(Config),
 }
 
 impl cosmic::Application for AppModel {
@@ -245,12 +272,16 @@ impl cosmic::Application for AppModel {
         core: cosmic::Core,
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
+        let (config_handler, config) = config::load(Self::APP_ID);
         let mut app = AppModel {
             core,
             backend: Backend::from_env(),
             connection: Connection::new(Instant::now()),
             popup: None,
-            autostart: None,
+            autostart: Autostart::default(),
+            tray: TrayPrompt::new(config.tray_prompt_dismissed),
+            config_handler,
+            config,
         };
         let task = if app.connection.tick() {
             app.poll()
@@ -267,10 +298,14 @@ impl cosmic::Application for AppModel {
     fn subscription(&self) -> Subscription<Message> {
         let poll = cosmic::iced::time::every(self.connection.interval(Instant::now()))
             .map(|_| Message::Tick);
+        let config = self
+            .core
+            .watch_config::<Config>(Self::APP_ID)
+            .map(|update| Message::ConfigChanged(update.config));
         if self.popup.is_some() {
-            Subscription::batch([poll, keyboard::listen().filter_map(popup::shortcut)])
+            Subscription::batch([poll, config, keyboard::listen().filter_map(popup::shortcut)])
         } else {
-            poll
+            Subscription::batch([poll, config])
         }
     }
 
@@ -299,27 +334,14 @@ impl cosmic::Application for AppModel {
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
-        let status = match self.connection.state() {
+        let content = match self.connection.state() {
             State::Connected(snapshot) => {
-                return self
-                    .core
-                    .applet
-                    .popup_container(popup::view(snapshot))
-                    .into();
+                popup::view(snapshot, self.autostart.banner(), self.tray.banner())
             }
-            // Placeholders until the guidance views (P4).
-            State::Connecting => fl!("connecting"),
-            State::Unavailable(Unavailable::NotRunning) => fl!("not-running"),
-            State::Unavailable(Unavailable::NotResponding) => fl!("not-responding"),
-            State::Incompatible => fl!("incompatible"),
+            State::Connecting => guidance::connecting(),
+            State::Unavailable(why) => guidance::unavailable(*why),
+            State::Incompatible => guidance::incompatible(),
         };
-        let content = cosmic::iced::widget::column![
-            widget::text::heading(fl!("app-title")),
-            widget::text::body(status),
-        ]
-        .spacing(8)
-        .padding(16);
-
         self.core.applet.popup_container(content).into()
     }
 
@@ -331,9 +353,19 @@ impl cosmic::Application for AppModel {
                 }
             }
             Message::Polled(result) => {
-                if self.connection.polled(Instant::now(), result) {
-                    return self.poll();
-                }
+                let was_connected = self.connection.state().is_connected();
+                let poll = if self.connection.polled(Instant::now(), result) {
+                    self.poll()
+                } else {
+                    Task::none()
+                };
+                // On connect, as well as when the popup opens (plan D7).
+                let autostart = if !was_connected && self.connection.state().is_connected() {
+                    self.check_autostart()
+                } else {
+                    Task::none()
+                };
+                return Task::batch([poll, autostart]);
             }
             Message::Refresh => {
                 let backend = self.backend.clone();
@@ -352,7 +384,19 @@ impl cosmic::Application for AppModel {
                 let open = Task::future(async move { backend.open(window).await }).discard();
                 return Task::batch([open, self.close_popup()]);
             }
-            Message::AutostartChecked(result) => self.autostart = result.ok(),
+            Message::CheckAgain => {
+                if self.connection.check_again() {
+                    return self.poll();
+                }
+            }
+            Message::OpenUrl(url) => return Task::batch([open_url(url), self.close_popup()]),
+            Message::AutostartChecked(_)
+            | Message::TurnOnAutostart
+            | Message::AutostartEnabled(_)
+            | Message::HideTray
+            | Message::TrayHidden(_)
+            | Message::KeepTray
+            | Message::ConfigChanged(_) => return self.update_banners(message),
             Message::ClosePopup => return self.close_popup(),
             Message::TogglePopup => {
                 return if self.popup.is_some() {
@@ -377,12 +421,9 @@ impl cosmic::Application for AppModel {
                     } else {
                         Task::none()
                     };
-                    let backend = self.backend.clone();
-                    let autostart =
-                        Task::perform(async move { backend.autostart_status().await }, |result| {
-                            cosmic::Action::App(Message::AutostartChecked(result))
-                        });
-                    Task::batch([get_popup(popup_settings), snapshot, autostart])
+                    self.autostart.popup_opened();
+                    self.tray.popup_opened();
+                    Task::batch([get_popup(popup_settings), snapshot, self.check_autostart()])
                 };
             }
             Message::PopupClosed(id) => {
@@ -407,6 +448,67 @@ impl AppModel {
         Task::perform(async move { backend.snapshot(spending).await }, |result| {
             cosmic::Action::App(Message::Polled(result))
         })
+    }
+
+    /// The autostart banner and the tray prompt.
+    fn update_banners(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
+        match message {
+            Message::AutostartChecked(result) => self.autostart.checked(result),
+            Message::TurnOnAutostart => {
+                if self.autostart.turn_on() {
+                    let backend = self.backend.clone();
+                    return Task::perform(
+                        async move { backend.enable_autostart().await },
+                        |result| cosmic::Action::App(Message::AutostartEnabled(result)),
+                    );
+                }
+            }
+            Message::AutostartEnabled(result) => {
+                self.autostart.enable_replied(&result);
+                return self.check_autostart();
+            }
+            Message::HideTray => {
+                if self.tray.hide() {
+                    let backend = self.backend.clone();
+                    return Task::perform(async move { backend.hide_tray().await }, |result| {
+                        cosmic::Action::App(Message::TrayHidden(result))
+                    });
+                }
+            }
+            Message::TrayHidden(result) => {
+                if self.tray.hide_replied(&result) {
+                    self.store_tray_dismissal();
+                }
+            }
+            Message::KeepTray => {
+                if self.tray.keep() {
+                    self.store_tray_dismissal();
+                }
+            }
+            Message::ConfigChanged(config) => {
+                self.tray.stored(config.tray_prompt_dismissed);
+                self.config = config;
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
+    fn check_autostart(&self) -> Task<cosmic::Action<Message>> {
+        let backend = self.backend.clone();
+        Task::perform(async move { backend.autostart_status().await }, |result| {
+            cosmic::Action::App(Message::AutostartChecked(result))
+        })
+    }
+
+    /// Remembers that the tray prompt was answered, so it doesn't come back (plan D8).
+    fn store_tray_dismissal(&mut self) {
+        let Some(handler) = &self.config_handler else {
+            return;
+        };
+        if let Err(why) = self.config.set_tray_prompt_dismissed(handler, true) {
+            eprintln!("can't store the tray prompt's answer: {why}");
+        }
     }
 
     fn close_popup(&mut self) -> Task<cosmic::Action<Message>> {
@@ -479,6 +581,23 @@ impl AppModel {
     }
 }
 
+/// Opens a web page with `xdg-open`. Inside the Flatpak that is flatpak-xdg-utils, which goes
+/// through the `OpenURI` portal (plan §4.4). Waiting for it reaps the process.
+fn open_url(url: &'static str) -> Task<cosmic::Action<Message>> {
+    Task::future(async move {
+        match tokio::process::Command::new("xdg-open")
+            .arg(url)
+            .status()
+            .await
+        {
+            Ok(status) if !status.success() => eprintln!("xdg-open {url} failed: {status}"),
+            Ok(_) => {}
+            Err(why) => eprintln!("can't run xdg-open: {why}"),
+        }
+    })
+    .discard()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,8 +640,21 @@ mod tests {
     fn connecting_until_the_first_snapshot() {
         let (mut connection, t0) = started();
         assert_eq!(connection.state(), &State::Connecting);
+        assert!(!connection.state().is_connected());
         assert!(!connection.polled(t0, Ok(two_providers())));
         assert_eq!(connection.state(), &State::Connected(two_providers()));
+        assert!(connection.state().is_connected());
+    }
+
+    #[test]
+    fn check_again_polls_now_or_after_the_poll_in_flight() {
+        let (mut connection, t0) = started();
+        assert!(!connection.check_again(), "still one request in flight");
+        assert!(connection.polled(t0 + GRACE, Err(BackendError::NotRunning)));
+        assert!(!connection.polled(t0 + GRACE, Err(BackendError::NotRunning)));
+        assert!(connection.check_again());
+        assert!(!connection.take_spending());
+        assert_eq!(connection.interval(t0 + GRACE), POLL);
     }
 
     #[test]
