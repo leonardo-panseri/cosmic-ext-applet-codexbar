@@ -1,10 +1,9 @@
 # Screenshots
 
-TODO: capture `popup.png` here. The metainfo (`resources/app.metainfo.xml`) already points at
-`https://raw.githubusercontent.com/leonardo-panseri/cosmic-ext-applet-codexbar/main/resources/screenshots/popup.png`,
-so it must exist on `main` before publishing (plan P6).
+`popup.png` is referenced by the metainfo (`resources/app.metainfo.xml`) through its raw URL on `main`, so keep
+the file name stable.
 
-- Show the panel with two providers and the open popup, matching the caption "Usage for two providers in the
-  panel and the popup".
-- PNG, 16:9 or close to it, at least 620 px wide; crop to the panel and popup. Use a scrubbed account: no email
-  addresses or organisation names.
+It shows the top panel with two providers and the open popup, captured on COSMIC with `cosmic-screenshot` and
+cropped to 830×800. The plan name and the spending amounts were repainted in Open Sans with made-up values, the
+same ones the test fixtures use. When you replace it, use a PNG at least 620 px wide, and keep email addresses,
+organisation names, real plan names and real spending out of it.

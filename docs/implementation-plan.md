@@ -600,8 +600,8 @@ install, the panel and the P2–P4 checks in the sandbox are still to do. Decisi
   work. **Hide tray icon** removed the desktop app's icon from the status area.
 - **Resources:** 27 MB RSS, 23 MB PSS, and no measurable CPU over 1.5 minutes idle.
 
-The `LICENSE` file has since been added (`c848508`). Still left for the user: capture
-`resources/screenshots/popup.png` as its README describes.
+The `LICENSE` file has since been added (`c848508`), and `resources/screenshots/popup.png` was captured from the
+real panel, with the plan name and spending repainted as the fixtures' scrubbed values.
 
 ### P6 — Publish
 
