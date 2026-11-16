@@ -278,21 +278,33 @@ also done.
 
 ### 4.3 Popup
 
-All `entries` go in one scrolling list, as in Omarchy.
+One tab per entry, laid out after the YapCap applet. (Until 2026-11-16 all entries went in one scrolling list, as in
+Omarchy.)
 
-1. **Status line:** `error`, or "Refreshing…" while `busy`, or "Updated {updated}", with "· older data" added when `stale`.
-2. **One card per entry:**
-   - **Header:** provider logo, display name and `plan`. The display name comes from a small id→name table copied from
-     `Usage.js::providerName`, falling back to the capitalised id. Add a `statusLevel` dot and `status` text when the status
-     isn't operational.
-   - `error`, when set.
-   - **Each window:** `label · {displayValue}% {displaySuffix}`, a `progress_bar` showing `displayValue` (destructive
-     colour when `warning`), `resetText`, and `pace` when it isn't empty.
-   - `credits`, `extraUsage` and `resetCredits` rows, each only when present.
-   - Spending from the matching `spending` row: today and 30 days. Show `error` instead when it's set.
-3. **Footer:** **Refresh**, **Usage & Spend…**, **Settings…**.
+1. **Header:** the status line, then **Usage & Spend** (the desktop app's `spending` window, which has the costs as
+   well as usage), **Settings** and **Refresh** as icon buttons with tooltips.
+   The status line is `error`, or "Refreshing…" while `busy`, or "Updated {updated}", with "· older data" added when
+   `stale`, after a warning icon when stale or failing.
+2. **Tabs:** one per entry, showing the provider logo (or the bar entry's `tag`), with the display name as a tooltip.
+   They're hidden when there's only one entry, and scroll sideways beyond six. Since the other entries are out of
+   sight, a tab gets a dot when its entry needs attention: destructive for `error` or a window with `warning`,
+   otherwise the `statusLevel` colour. The selected tab is kept while the applet runs; when its provider goes away,
+   the first tab is shown.
+3. **The selected entry's page:**
+   - **Title:** provider logo, display name and `plan` in a pill, with a capital first letter (Codex sends `plus`). The display name comes from a small id→name table
+     copied from `Usage.js::providerName`, falling back to the capitalised id. Then a `statusLevel` dot and `status`
+     text when the status isn't operational, and `error` when set.
+   - **Usage card:** for each window, `label`, a `progress_bar` showing `displayValue` (destructive colour when
+     `warning`), then `{displayValue}% {displaySuffix}` and `resetText` on one line. A tick on the bar marks
+     `paceExpected`, and `pace` shows as a tooltip on the bar, one `|`-separated part per line, or "No pace estimate
+     for this window" when it's empty.
+   - **Credits card:** `credits`, `extraUsage` and `resetCredits` rows, each only when present.
+   - **Spending card:** from the matching `spending` row, today and 30 days. Show `error` instead when it's set.
 
-**Keyboard:** `R` refreshes and `Esc` closes.
+**Keyboard:** `R` refreshes, `Esc` closes, and the left and right arrows switch tabs.
+
+**Preview:** in debug builds, `CODEXBAR_PREVIEW=tests/fixtures/<file>.json cargo run` shows this popup in an ordinary
+window, and `CODEXBAR_PREVIEW_PROVIDER=<id>` picks its tab.
 
 ### 4.4 Guidance (`Unavailable`)
 
@@ -320,7 +332,7 @@ The applet never changes autostart without the user clicking. The banner disappe
 ### 4.6 Localisation
 
 Our own strings use Fluent (`i18n/en`). Labels, reset text, pace, plan and status come from the backend
-in English. We show them as they are.
+in English. We show them as they are, except that the plan gets a capital first letter (§4.3).
 
 ---
 

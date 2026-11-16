@@ -220,6 +220,8 @@ pub struct AppModel {
     /// `None` when the config folder can't be opened: then nothing is remembered.
     config_handler: Option<cosmic::cosmic_config::Config>,
     config: Config,
+    /// The popup's selected tab, kept while the applet runs. `None` selects the first entry.
+    provider: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -232,8 +234,12 @@ pub enum Message {
     Polled(Result<Snapshot, BackendError>),
     Refresh,
     Refreshed(Result<(), BackendError>),
-    /// A popup footer button: ask the desktop app to open one of its windows.
+    /// A popup header button: ask the desktop app to open one of its windows.
     Open(backend::Window),
+    /// A provider's tab in the popup.
+    SelectProvider(String),
+    /// The left or right arrow in the popup.
+    SwitchProvider(popup::Step),
     /// **Check again** in the `Unavailable` popup.
     CheckAgain,
     /// A link in the guidance: one of the `guidance` URLs.
@@ -282,6 +288,7 @@ impl cosmic::Application for AppModel {
             tray: TrayPrompt::new(config.tray_prompt_dismissed),
             config_handler,
             config,
+            provider: None,
         };
         let task = if app.connection.tick() {
             app.poll()
@@ -335,9 +342,12 @@ impl cosmic::Application for AppModel {
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
         let content = match self.connection.state() {
-            State::Connected(snapshot) => {
-                popup::view(snapshot, self.autostart.banner(), self.tray.banner())
-            }
+            State::Connected(snapshot) => popup::view(
+                snapshot,
+                self.provider.as_deref(),
+                self.autostart.banner(),
+                self.tray.banner(),
+            ),
             State::Connecting => guidance::connecting(),
             State::Unavailable(why) => guidance::unavailable(*why),
             State::Incompatible => guidance::incompatible(),
@@ -383,6 +393,13 @@ impl cosmic::Application for AppModel {
                 // A failure shows up as `Unavailable` on the next poll.
                 let open = Task::future(async move { backend.open(window).await }).discard();
                 return Task::batch([open, self.close_popup()]);
+            }
+            Message::SelectProvider(provider) => self.provider = Some(provider),
+            Message::SwitchProvider(step) => {
+                if let State::Connected(snapshot) = self.connection.state() {
+                    self.provider = popup::adjacent(snapshot, self.provider.as_deref(), step)
+                        .map(str::to_owned);
+                }
             }
             Message::CheckAgain => {
                 if self.connection.check_again() {

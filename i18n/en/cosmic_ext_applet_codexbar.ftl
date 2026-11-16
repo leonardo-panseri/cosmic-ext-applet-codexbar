@@ -22,15 +22,22 @@ waiting-for-usage = Waiting for usage…
 updated = Updated { $time }
 updated-stale = Updated { $time } · older data
 unknown-provider = Unknown provider
-credits = Credits: { $amount } remaining
+no-providers = No providers are turned on. Choose them in CodexBar Settings.
+usage = Usage
+no-pace = No pace estimate for this window
+credits = Credits
+credits-remaining = Remaining
 extra-usage = Extra usage
 balance = Balance { $amount }
-reset-credits = Reset credits: { $count } available
-spending = Today { $today } · Last 30 days { $month }
+reset-credits = Reset credits
+reset-credits-available = { $count } available
+spending = Spending
+spending-today = Today
+spending-month = Last 30 days
 unavailable = Unavailable
 refresh = Refresh
-usage-and-spend = Usage & Spend…
-settings = Settings…
+usage-and-spend = Usage & Spend
+settings = Settings
 
 ## Banners (Connected)
 

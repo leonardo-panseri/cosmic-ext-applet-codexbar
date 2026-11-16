@@ -61,9 +61,9 @@ impl std::error::Error for BackendError {}
 /// A desktop app window the applet can ask it to open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Window {
-    Usage,
-    /// Unused: the popup's "Usage & Spend…" opens `Usage`, as upstream's adapters do.
+    /// Unused: the popup's Usage & Spend button opens `Spending`, which has the costs as well.
     #[allow(dead_code)]
+    Usage,
     Spending,
     Settings,
 }
