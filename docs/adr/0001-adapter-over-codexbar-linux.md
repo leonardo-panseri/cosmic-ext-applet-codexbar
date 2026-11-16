@@ -31,7 +31,7 @@ Running the client binary would need a host-escape permission, and would cost a 
 
 Tested on CachyOS with cosmic-panel, Flatpak 1.18.4, and `codexbar-linux` **0.84.0**. The plan pins upstream
 `1f6da9bec` (0.84.1), but `Integrations/Linux` hasn't changed since `ed68b1013`, so the protocol is the same.
-The spike code is on the throwaway branch `spike/p0-sandbox`.
+The spike code is kept under the tag `spike-p0`.
 
 1. **Install the desktop app.** Pass. The Qt packages and `codexbar-linux` were already installed and running.
 2. **Fixtures.** Pass. Ten fixtures are in `tests/fixtures/`, each case with and without `"spending":true`:
