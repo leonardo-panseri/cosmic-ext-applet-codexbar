@@ -371,6 +371,22 @@ change later phases are noted in P2 and P5 below.
 
 **Check:** `cargo test` and `just check` are clean.
 
+**Done 2026-11-16.** 21 unit tests, plus an ignored read-only test against the real desktop app
+(`cargo test -- --ignored live`). Differences from the description above:
+
+- `backend::Backend` has one typed method per command (`snapshot`, `refresh`, `open`, `autostart_status`,
+  `enable_autostart`, `hide_tray`) instead of a single `request(path, command) -> Reply`, so callers never
+  match on a reply kind that can't occur.
+- `BackendError::Protocol` is called `Incompatible`, after the D7 state it maps to. It covers invalid JSON and a
+  `schemaVersion` other than 1.
+- `BackendError::Rejected(error)` is new: the desktop app replied `ok: false`, for example `configure` with an
+  invalid `linux.json`, or `Unknown command` from an older desktop app.
+- A reply that ends without `\n` is `NotResponding`, not a protocol error. Upstream's client also treats it as
+  no reply, and it only happens when the desktop app closes mid-reply.
+- The §4.2 rules that depend only on the snapshot (bar entries and `+N`, the `summary` fallback, the empty case)
+  live in `Snapshot::bar()`. Staleness is left to the panel view.
+- The ADR was already written in P0; `CONTEXT.md` is new.
+
 ### P2 — Panel button and state machine
 
 The D7 state machine, the 5 s subscription and the horizontal and vertical panel views from §4.2.
