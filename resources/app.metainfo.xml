@@ -5,16 +5,31 @@
   <project_license>MPL-2.0</project_license>
   <name>CodexBar</name>
   <summary>AI usage from CodexBar for Linux in the COSMIC™ panel</summary>
-  <icon type="remote" width="64" height="64" scale="1">
-    https://github.com/leonardo-panseri/cosmic-ext-applet-codexbar.git/raw/main/resources/icons/hicolor/scalable/apps/icon.svg
-  </icon>
-  <url type="vcs-browser">https://github.com/leonardo-panseri/cosmic-ext-applet-codexbar.git</url>
+  <description>
+    <p>
+      A panel applet that shows your AI usage limits from CodexBar for Linux: a short summary in the
+      panel, and a popup with each provider's usage windows, credits and spending.
+    </p>
+    <p>
+      CodexBar for Linux must be installed and running on the host. It does the provider polling and
+      holds the settings; this applet only displays its data, read over CodexBar's local socket.
+      Without it, the applet shows how to install it.
+    </p>
+    <p>
+      The provider logos come from CodexBar and are used under the MIT licence.
+    </p>
+  </description>
+  <developer id="io.github.leonardo_panseri">
+    <name>Leonardo Panseri</name>
+  </developer>
+  <icon type="remote" width="64" height="64" scale="1">https://raw.githubusercontent.com/leonardo-panseri/cosmic-ext-applet-codexbar/main/resources/icon.svg</icon>
+  <url type="homepage">https://github.com/leonardo-panseri/cosmic-ext-applet-codexbar</url>
+  <url type="bugtracker">https://github.com/leonardo-panseri/cosmic-ext-applet-codexbar/issues</url>
+  <url type="vcs-browser">https://github.com/leonardo-panseri/cosmic-ext-applet-codexbar</url>
   <launchable type="desktop-id">io.github.leonardo_panseri.cosmic-ext-applet-codexbar.desktop</launchable>
   <provides>
     <id>com.system76.CosmicApplet</id>
-    <binaries>
-      <binary>cosmic-ext-applet-codexbar</binary>
-    </binaries>
+    <binary>cosmic-ext-applet-codexbar</binary>
   </provides>
   <requires>
     <display_length compare="ge">360</display_length>
@@ -24,6 +39,12 @@
     <control>pointing</control>
     <control>touch</control>
   </supports>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/leonardo-panseri/cosmic-ext-applet-codexbar/main/resources/screenshots/popup.png</image>
+      <caption>Usage for two providers in the panel and the popup</caption>
+    </screenshot>
+  </screenshots>
   <categories>
     <category>COSMIC</category>
   </categories>

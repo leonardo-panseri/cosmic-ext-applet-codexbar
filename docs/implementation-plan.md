@@ -555,6 +555,48 @@ Differences from the description above:
 
 **Check:** install from a local repo, add the applet in Panel settings, and run P2–P4 again inside the sandbox.
 
+**Done 2026-11-16.** `just flatpak-build` builds offline from `flatpak/cargo-sources.json` (610 crates and 13 git
+repositories, libcosmic among them): a 21 MB binary, a 9.7 MB bundle, and `appstreamcli compose` succeeds. The
+install, the panel and the P2–P4 checks in the sandbox are still to do. Decisions:
+
+- **Source.** The manifest builds the working tree through a `dir` source (`path: ".."`), skipping `.git`,
+  `target`, `.flatpak-builder` and `build-flatpak`, so uncommitted changes build too and CI builds its checkout.
+  The P6 copy for cosmic-flatpak swaps it for `{"type": "git", "url": …, "tag": …, "commit": …}`; everything
+  else, `cargo-sources.json` included, is copied unchanged.
+- **Build commands** follow cosmic-flatpak's applets: `cargo --offline fetch`, then
+  `cargo --offline build --release --locked`, with `CARGO_HOME=/run/build/cosmic-ext-applet-codexbar/cargo`,
+  where the generated sources put their `config`. `THIRD_PARTY_NOTICES.md` goes to `/app/share/licenses/<id>/`,
+  since the MIT logos are embedded in the binary.
+- **`org.flatpak.Builder`** runs `flatpak info` on the host to find the SDK and forwards its own environment, so
+  the sandbox's `XDG_DATA_HOME` hides runtimes installed with `--user` ("Unable to find sdk"). The recipe unsets it
+  before calling `flatpak-builder`. State and output live in `.flatpak-builder/` and `build-flatpak/` (ignored).
+  The recipe doesn't pass `--install-deps-from`; the README lists the `flatpak install` command instead.
+- **`flatpak-install`** adds `build-flatpak/repo` as the `codexbar-applet-local` user remote, without GPG, and
+  installs from it.
+- **`flatpak-sources`** downloads `flatpak-cargo-generator.py` at a pinned flatpak-builder-tools commit into a venv
+  under `build-flatpak/tools` (or `$FLATPAK_TOOLS_DIR`) and regenerates `cargo-sources.json` from `Cargo.lock`.
+- **Metainfo:** a three-paragraph description (what it shows, the CodexBar for Linux requirement, MIT logos), a
+  `developer`, homepage and bugtracker URLs, `vcs-browser` without `.git`, and the remote icon at
+  `raw.githubusercontent.com/…/main/resources/icon.svg`. `<binaries><binary>` became `<binary>`, the form
+  AppStream knows. `appstreamcli validate --pedantic` reports only `releases-info-missing`, left for the P6 tag.
+- **Screenshot:** the metainfo points at `resources/screenshots/popup.png` on `main`, which doesn't exist yet;
+  `resources/screenshots/README.md` says what to capture.
+- **Keywords** no longer repeat `CodexBar`, the entry's `Name`, which `desktop-file-validate` warned about.
+- **CI** (`.github/workflows/ci.yml`, on pushes to `main` and on pull requests): `cargo fmt --check`, clippy as
+  `just check --all-targets` with `-D warnings`, and `cargo test`, on `ubuntu-latest` with only
+  `libxkbcommon-dev` (the binary's one linked system library; libwayland is dlopened). A second job runs
+  `flatpak/flatpak-github-actions/flatpak-builder@v6` in the `freedesktop-25.08` image, which installs the rust
+  extension and the BaseApp from Flathub and uploads the bundle. Neither job has run on GitHub yet.
+
+Left for the user:
+
+- `just flatpak-install`, then add **CodexBar** in Settings → Desktop → Panel → Configure panel applets.
+  Then rerun the P2, P3 and P4 checks with the panel's
+  sandboxed applet.
+- Capture `resources/screenshots/popup.png` as its README describes.
+- Add a `LICENSE` file with the MPL-2.0 text before P6: `Cargo.toml` and the metainfo declare it, but the
+  repository has none.
+
 ### P6 — Publish
 
 Open a PR to pop-os/cosmic-flatpak adding `app/<id>/<id>.json` and `cargo-sources.json`, pinned to a tagged commit

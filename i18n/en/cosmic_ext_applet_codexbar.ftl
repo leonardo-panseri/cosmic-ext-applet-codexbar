@@ -1,6 +1,6 @@
 app-title = CodexBar
 app-comment = AI usage from CodexBar for Linux in the COSMIC™ panel
-app-keywords = COSMIC;CodexBar;AI;Usage;Quota;
+app-keywords = COSMIC;AI;Usage;Quota;
 
 ## Popup (Connecting, Unavailable, Incompatible)
 

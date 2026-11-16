@@ -12,3 +12,7 @@ debian/*
 !debian/install
 !debian/rules
 !debian/source
+
+# Flatpak builder state and build output (just flatpak-build)
+.flatpak-builder/
+build-flatpak/

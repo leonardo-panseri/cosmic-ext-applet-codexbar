@@ -85,6 +85,50 @@ sync-icons upstream:
     } > resources/THIRD_PARTY_NOTICES.md
     echo "Copied $(ls resources/providers | wc -l) logos from CodexBar $commit"
 
+# Flatpak: the manifest builds the working tree, offline, from flatpak/cargo-sources.json.
+# org.flatpak.Builder has a private /tmp, so its state and output stay under the repo.
+flatpak-manifest := 'flatpak' / appid + '.json'
+flatpak-state := '.flatpak-builder'
+flatpak-build-dir := 'build-flatpak'
+flatpak-repo := absolute_path(flatpak-build-dir / 'repo')
+flatpak-remote := 'codexbar-applet-local'
+
+# flatpak-cargo-generator, pinned; its Python venv lives in FLATPAK_TOOLS_DIR
+cargo-generator-commit := '9d86d336a39b9af38b86f114b6ce5820fe260f91'
+flatpak-tools := env('FLATPAK_TOOLS_DIR', flatpak-build-dir / 'tools')
+
+# Builds the Flatpak into build-flatpak/repo (needs org.flatpak.Builder and the runtimes; see README).
+# flatpak-builder runs `flatpak` on the host with its own environment, and the sandbox's
+# XDG_DATA_HOME would hide runtimes installed with --user, so it is unset first.
+flatpak-build *args:
+    flatpak run --command=sh org.flatpak.Builder -c 'unset XDG_DATA_HOME; exec flatpak-builder "$@"' flatpak-builder \
+        --force-clean \
+        --state-dir={{flatpak-state}} \
+        --repo={{flatpak-repo}} \
+        {{args}} \
+        {{flatpak-build-dir / 'app'}} {{flatpak-manifest}}
+
+# Installs the Flatpak built by `just flatpak-build` for the current user
+flatpak-install:
+    flatpak remote-add --user --if-not-exists --no-gpg-verify {{flatpak-remote}} {{flatpak-repo}}
+    flatpak install --user --reinstall --noninteractive {{flatpak-remote}} {{appid}}
+
+# Regenerates flatpak/cargo-sources.json from Cargo.lock; run after changing dependencies
+flatpak-sources:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tools='{{flatpak-tools}}'
+    script="$tools/flatpak-cargo-generator.py"
+    if [ ! -x "$tools/venv/bin/python" ]; then
+        python3 -m venv "$tools/venv"
+        "$tools/venv/bin/pip" install --quiet 'aiohttp>=3.9.5,<4' 'tomlkit>=0.13.3,<1'
+    fi
+    if [ ! -f "$script" ]; then
+        curl -fsSL -o "$script" \
+            'https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/{{cargo-generator-commit}}/cargo/flatpak-cargo-generator.py'
+    fi
+    "$tools/venv/bin/python" -I "$script" Cargo.lock -o flatpak/cargo-sources.json
+
 # Vendor dependencies locally
 vendor:
     mkdir -p .cargo
