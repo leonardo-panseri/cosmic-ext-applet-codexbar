@@ -1,0 +1,80 @@
+# Weekly check for upstream CodexBar changes that may affect the adapter.
+#
+# tools/check-upstream.py compares the commit pinned in upstream.toml with upstream's
+# default branch. When something monitored changed, this opens one issue labelled
+# `upstream-drift`, or updates the open one. After review, bump the pin as described in
+# upstream.toml; the next run then finds no changes and closes the issue.
+name: Upstream monitor
+
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-monitor
+  cancel-in-progress: false
+
+env:
+  LABEL: upstream-drift
+  TITLE: Upstream CodexBar changed files the adapter depends on
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Compare upstream with the pinned commit
+        id: check
+        run: |
+          set +e
+          python3 tools/check-upstream.py --report "$RUNNER_TEMP/report.md"
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "changed=false" >> "$GITHUB_OUTPUT" ;;
+            1) echo "changed=true" >> "$GITHUB_OUTPUT"
+               cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) exit "$rc" ;;
+          esac
+
+      - name: Open or update the tracking issue
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          report="$RUNNER_TEMP/report.md"
+          gh label create "$LABEL" --color D93F0B \
+            --description "Upstream CodexBar changed files the adapter depends on" --force
+          number=$(gh issue list --state open --label "$LABEL" --limit 1 --json number --jq '.[0].number // empty')
+          if [ -z "$number" ]; then
+            gh issue create --title "$TITLE" --label "$LABEL" --body-file "$report"
+            exit 0
+          fi
+          head=$(grep -o 'upstream-head: [0-9a-f]*' "$report")
+          if gh issue view "$number" --json body --jq .body | grep -qF "$head"; then
+            echo "Issue #$number is already up to date"
+            exit 0
+          fi
+          gh issue edit "$number" --body-file "$report"
+          gh issue comment "$number" --body "Upstream moved; the report above now covers ${head#upstream-head: }."
+
+      - name: Close the tracking issue once the pin is current
+        if: steps.check.outputs.changed == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          number=$(gh issue list --state open --label "$LABEL" --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue close "$number" --comment "No monitored upstream changes since the pinned commit in upstream.toml."
+          fi

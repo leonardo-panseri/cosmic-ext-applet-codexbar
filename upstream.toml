@@ -1,0 +1,16 @@
+# The upstream CodexBar commit this applet was last reviewed against.
+#
+# tools/check-upstream.py and .github/workflows/upstream-monitor.yml read this file
+# and report changes between `commit` and upstream's default branch in the files the
+# adapter depends on (see MONITORED_FILES in the script).
+#
+# To bump after reviewing a reported change (and updating the applet if needed):
+#
+#     python3 tools/check-upstream.py --ref <full upstream SHA from the issue> --bump
+#
+# then update the "Upstream reference" line in docs/implementation-plan.md to match,
+# commit both, and the next scheduled run closes the open upstream-drift issue.
+# `commit` must be a full 40-character SHA, because git can only fetch full SHAs.
+
+repo = "steipete/CodexBar"
+commit = "1f6da9bec44455288ddee5ef6f3617a803d8eb2a"
