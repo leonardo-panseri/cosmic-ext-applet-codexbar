@@ -59,10 +59,11 @@ impl std::fmt::Display for BackendError {
 impl std::error::Error for BackendError {}
 
 /// A desktop app window the applet can ask it to open.
-#[allow(dead_code)] // The popup footer (P3) opens these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Window {
     Usage,
+    /// Unused: the popup's "Usage & Spend…" opens `Usage`, as upstream's adapters do.
+    #[allow(dead_code)]
     Spending,
     Settings,
 }
@@ -133,7 +134,6 @@ impl Backend {
         self.command(&json!({"command": "refresh"})).await.map(drop)
     }
 
-    #[allow(dead_code)] // The popup footer (P3).
     pub async fn open(&self, window: Window) -> Result<(), BackendError> {
         self.command(&json!({"command": window.command()}))
             .await
@@ -141,7 +141,6 @@ impl Backend {
     }
 
     /// Whether the desktop app starts at login.
-    #[allow(dead_code)] // The autostart banner (P4).
     pub async fn autostart_status(&self) -> Result<bool, BackendError> {
         self.autostart("status").await
     }

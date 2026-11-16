@@ -448,6 +448,39 @@ The status line, provider cards, footer actions and keyboard shortcuts from §4.
 
 **Check:** the footer buttons open the desktop app's windows, and spending appears after opening the popup.
 
+**Done 2026-11-16.** `src/popup.rs` draws the `Connected` popup; the other states keep P2's placeholder
+until P4. 10 new unit tests for the formatting and shortcuts, against the fixtures, plus 2 for the
+popup-open poll; the real-panel check is still to do. Decisions:
+
+- **Formats** follow upstream's adapters where they have one: the status line and window line as in
+  Omarchy's `Panel.qml`; `providerName` copied from `Usage.js`; `money` as `Usage.js` (`$3.25`, or
+  "Unavailable"); credits as the desktop app's quick view ("Credits: 0 remaining"); spending as its quick
+  view ("Today $3.25 · Last 30 days $42.50", or the row's `error`). No Linux adapter draws `extraUsage` or
+  `resetCredits`, so these follow the Mac menu card: "{period}: {used} / {limit} · Balance {balance}" with
+  only the amounts present, dollars for `USD` and otherwise numbers followed once by the currency
+  ("Extra usage: 0 / 0 Credits"); and "Reset credits: 3 available".
+- **Status dot:** warning colour for `minor` and `maintenance`, destructive for `major` and `critical`, text
+  colour otherwise. A level without `status` text (`unknown` when the status page wasn't checked) shows
+  nothing.
+- **Popup open:** `Connection::popup_opened` marks the next snapshot request as `spending: true`. If a poll is
+  in flight, it reuses the refresh path: another poll goes out as soon as that one returns, so there is still
+  at most one request in flight. `autostart status` is sent alongside and its result kept in
+  `AppModel::autostart` for P4. Plain polls keep the spending rows (the desktop app sends its cached scan in
+  every snapshot), so spending stays after the first scan.
+- **Footer:** Refresh is disabled while `busy`, as in Omarchy. **Usage & Spend…** and **Settings…** close the
+  popup, as Omarchy's `launch()` does; a failed `open` is dropped, since the next poll shows `Unavailable`.
+- **Keyboard:** `keyboard::listen` while the popup is open. `R` matches by key position on non-Latin layouts
+  and ignores key repeat and Ctrl/Alt/Super; `Esc` closes.
+- **Scrolling:** the card list scrolls past 520 px, so the popup stays on screen with many providers.
+
+Differences from the description above:
+
+- With an empty `updated` (the first seconds after the desktop app starts), the status line says "Waiting for
+  usage…", as the desktop app's quick view does, instead of a bare "Updated".
+- `resetCredits.nextExpiresAt` isn't shown: it is a UTC timestamp, and the applet doesn't parse timestamps
+  (§2). Showing its date part could be a day off. If it matters, ask upstream for preformatted text.
+- `backend::Window::Spending` stays unused: "Usage & Spend…" opens `usage`, as upstream's adapters do.
+
 ### P4 — Guidance and autostart
 
 §4.4 and §4.5, the tray prompt from D8, and the `Incompatible` view.

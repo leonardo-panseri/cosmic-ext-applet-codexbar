@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! The panel button, the poll loop and what the applet knows about the backend
-//! (`docs/implementation-plan.md` D7, §4.1 and §4.2). The popup is still a placeholder until P3.
+//! (`docs/implementation-plan.md` D7, §4.1 and §4.2). The `Connected` popup is in [`crate::popup`];
+//! the other states keep a placeholder until P4.
 
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
 use cosmic::iced::widget::{stack, svg};
-use cosmic::iced::{Alignment, Length, Limits, Subscription, window::Id};
+use cosmic::iced::{Alignment, Length, Limits, Subscription, keyboard, window::Id};
 use cosmic::prelude::*;
 use cosmic::widget::{self, icon};
 
-use crate::backend::{Backend, BackendError};
+use crate::backend::{self, Backend, BackendError};
 use crate::snapshot::{Bar, Snapshot};
-use crate::{fl, icons};
+use crate::{fl, icons, popup};
 
 /// At login the applet and the desktop app start together, so failures in this window keep
 /// the applet `Connecting` instead of flashing a warning.
@@ -75,9 +76,11 @@ pub struct Connection {
     state: State,
     /// A snapshot request is running. Ticks that find one are skipped.
     in_flight: bool,
-    /// A refresh finished while a request was running, so that request's reply may predate it.
-    /// Poll again as soon as it returns.
+    /// A refresh finished, or the popup opened, while a request was running, so that request's
+    /// reply may predate the refresh or lack the spending request. Poll again as soon as it returns.
     poll_after: bool,
+    /// The popup opened: the next request asks for spending (plan §4.1).
+    spending: bool,
     /// After a refresh, poll every [`FAST_POLL`] while the snapshot is `busy`, until this time.
     fast_until: Option<Instant>,
 }
@@ -89,6 +92,7 @@ impl Connection {
             state: State::Connecting,
             in_flight: false,
             poll_after: false,
+            spending: false,
             fast_until: None,
         }
     }
@@ -111,12 +115,28 @@ impl Connection {
         !std::mem::replace(&mut self.in_flight, true)
     }
 
+    /// The popup opened. Poll with spending now, or as soon as the poll in flight returns.
+    pub fn popup_opened(&mut self) -> bool {
+        self.spending = true;
+        self.poll_soon()
+    }
+
+    /// Whether the request about to be sent asks for spending. Call once for each request.
+    pub fn take_spending(&mut self) -> bool {
+        std::mem::take(&mut self.spending)
+    }
+
     /// The `refresh` request finished. Poll right away, and if the desktop app accepted it, keep
     /// polling fast while it's busy.
     pub fn refreshed(&mut self, now: Instant, accepted: bool) -> bool {
         if accepted {
             self.fast_until = Some(now + FAST_POLL_CAP);
         }
+        self.poll_soon()
+    }
+
+    /// Poll now, or right after the poll in flight.
+    fn poll_soon(&mut self) -> bool {
         if self.in_flight {
             self.poll_after = true;
             false
@@ -133,6 +153,7 @@ impl Connection {
         self.state = state.after(result, now.saturating_duration_since(self.started));
         if std::mem::take(&mut self.poll_after) {
             // This reply was requested before the refresh, so its `busy` says nothing yet.
+            // Or the popup opened meanwhile, and spending is still to be asked for.
             return self.tick();
         }
         if !busy {
@@ -182,23 +203,25 @@ pub struct AppModel {
     backend: Backend,
     connection: Connection,
     popup: Option<Id>,
+    /// Whether the desktop app starts at login, as of the last time the popup opened. `None`
+    /// until then, or when the desktop app couldn't say.
+    #[allow(dead_code)] // The autostart banner (P4) reads it.
+    autostart: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     TogglePopup,
+    /// `Esc` in the popup.
+    ClosePopup,
     PopupClosed(Id),
     Tick,
     Polled(Result<Snapshot, BackendError>),
     Refresh,
     Refreshed(Result<(), BackendError>),
-}
-
-fn poll(backend: &Backend) -> Task<cosmic::Action<Message>> {
-    let backend = backend.clone();
-    Task::perform(async move { backend.snapshot(false).await }, |result| {
-        cosmic::Action::App(Message::Polled(result))
-    })
+    /// A popup footer button: ask the desktop app to open one of its windows.
+    Open(backend::Window),
+    AutostartChecked(Result<bool, BackendError>),
 }
 
 impl cosmic::Application for AppModel {
@@ -227,9 +250,10 @@ impl cosmic::Application for AppModel {
             backend: Backend::from_env(),
             connection: Connection::new(Instant::now()),
             popup: None,
+            autostart: None,
         };
         let task = if app.connection.tick() {
-            poll(&app.backend)
+            app.poll()
         } else {
             Task::none()
         };
@@ -241,7 +265,13 @@ impl cosmic::Application for AppModel {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        cosmic::iced::time::every(self.connection.interval(Instant::now())).map(|_| Message::Tick)
+        let poll = cosmic::iced::time::every(self.connection.interval(Instant::now()))
+            .map(|_| Message::Tick);
+        if self.popup.is_some() {
+            Subscription::batch([poll, keyboard::listen().filter_map(popup::shortcut)])
+        } else {
+            poll
+        }
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
@@ -270,11 +300,18 @@ impl cosmic::Application for AppModel {
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
         let status = match self.connection.state() {
+            State::Connected(snapshot) => {
+                return self
+                    .core
+                    .applet
+                    .popup_container(popup::view(snapshot))
+                    .into();
+            }
+            // Placeholders until the guidance views (P4).
             State::Connecting => fl!("connecting"),
             State::Unavailable(Unavailable::NotRunning) => fl!("not-running"),
             State::Unavailable(Unavailable::NotResponding) => fl!("not-responding"),
             State::Incompatible => fl!("incompatible"),
-            State::Connected(_) => fl!("rewrite-in-progress"),
         };
         let content = cosmic::iced::widget::column![
             widget::text::heading(fl!("app-title")),
@@ -290,12 +327,12 @@ impl cosmic::Application for AppModel {
         match message {
             Message::Tick => {
                 if self.connection.tick() {
-                    return poll(&self.backend);
+                    return self.poll();
                 }
             }
             Message::Polled(result) => {
                 if self.connection.polled(Instant::now(), result) {
-                    return poll(&self.backend);
+                    return self.poll();
                 }
             }
             Message::Refresh => {
@@ -306,12 +343,20 @@ impl cosmic::Application for AppModel {
             }
             Message::Refreshed(result) => {
                 if self.connection.refreshed(Instant::now(), result.is_ok()) {
-                    return poll(&self.backend);
+                    return self.poll();
                 }
             }
+            Message::Open(window) => {
+                let backend = self.backend.clone();
+                // A failure shows up as `Unavailable` on the next poll.
+                let open = Task::future(async move { backend.open(window).await }).discard();
+                return Task::batch([open, self.close_popup()]);
+            }
+            Message::AutostartChecked(result) => self.autostart = result.ok(),
+            Message::ClosePopup => return self.close_popup(),
             Message::TogglePopup => {
-                return if let Some(popup) = self.popup.take() {
-                    destroy_popup(popup)
+                return if self.popup.is_some() {
+                    self.close_popup()
                 } else {
                     let new_id = Id::unique();
                     self.popup.replace(new_id);
@@ -327,7 +372,17 @@ impl cosmic::Application for AppModel {
                         .min_width(300.0)
                         .min_height(100.0)
                         .max_height(1080.0);
-                    get_popup(popup_settings)
+                    let snapshot = if self.connection.popup_opened() {
+                        self.poll()
+                    } else {
+                        Task::none()
+                    };
+                    let backend = self.backend.clone();
+                    let autostart =
+                        Task::perform(async move { backend.autostart_status().await }, |result| {
+                            cosmic::Action::App(Message::AutostartChecked(result))
+                        });
+                    Task::batch([get_popup(popup_settings), snapshot, autostart])
                 };
             }
             Message::PopupClosed(id) => {
@@ -345,6 +400,19 @@ impl cosmic::Application for AppModel {
 }
 
 impl AppModel {
+    /// Sends the snapshot request that [`Connection`] just asked for.
+    fn poll(&mut self) -> Task<cosmic::Action<Message>> {
+        let spending = self.connection.take_spending();
+        let backend = self.backend.clone();
+        Task::perform(async move { backend.snapshot(spending).await }, |result| {
+            cosmic::Action::App(Message::Polled(result))
+        })
+    }
+
+    fn close_popup(&mut self) -> Task<cosmic::Action<Message>> {
+        self.popup.take().map_or_else(Task::none, destroy_popup)
+    }
+
     fn icon_size(&self) -> u16 {
         self.core.applet.suggested_size(true).0
     }
@@ -609,6 +677,31 @@ mod tests {
         connection.polled(t0 + GRACE, Err(BackendError::NotRunning));
         assert!(connection.refreshed(t0 + GRACE, false));
         assert_eq!(connection.interval(t0 + GRACE), POLL);
+    }
+
+    #[test]
+    fn only_polls_after_the_popup_opens_ask_for_spending() {
+        let (mut connection, t0) = started();
+        assert!(!connection.take_spending());
+        connection.polled(t0, Ok(two_providers()));
+
+        assert!(connection.popup_opened());
+        assert!(connection.take_spending());
+        assert!(!connection.polled(t0 + SECOND, Ok(two_providers())));
+        assert!(connection.tick());
+        assert!(!connection.take_spending());
+    }
+
+    #[test]
+    fn popup_opening_during_a_poll_asks_for_spending_when_it_returns() {
+        let (mut connection, t0) = started();
+        assert!(!connection.popup_opened());
+        assert!(!connection.tick(), "still one request in flight");
+        // The startup poll didn't ask for spending, so poll again at once.
+        assert!(connection.polled(t0, Ok(two_providers())));
+        assert!(connection.take_spending());
+        assert!(!connection.polled(t0, Ok(two_providers())));
+        assert!(!connection.take_spending());
     }
 
     #[test]

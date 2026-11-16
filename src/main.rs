@@ -4,6 +4,7 @@ mod app;
 mod backend;
 mod i18n;
 mod icons;
+mod popup;
 mod snapshot;
 
 fn main() -> cosmic::iced::Result {
