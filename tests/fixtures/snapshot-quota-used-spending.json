@@ -1,0 +1,151 @@
+{
+  "barEntries": [
+    {
+      "provider": "claude",
+      "tag": "CL",
+      "text": "10%"
+    },
+    {
+      "provider": "codex",
+      "tag": "CX",
+      "text": "0%"
+    }
+  ],
+  "busy": false,
+  "costBusy": false,
+  "costError": "",
+  "costProviders": 2,
+  "entries": [
+    {
+      "credits": null,
+      "error": "",
+      "extraUsage": null,
+      "plan": "Claude Pro",
+      "provider": "claude",
+      "resetCredits": null,
+      "status": "Minor Service Outage",
+      "statusLevel": "minor",
+      "updatedAt": "2026-11-16T11:35:29Z",
+      "windows": [
+        {
+          "displaySuffix": "used",
+          "displayValue": 10,
+          "key": "primary",
+          "label": "5 hour",
+          "minutes": 300,
+          "pace": "89% in reserve | Expected 99% used | Lasts until reset",
+          "paceDelta": -89,
+          "paceExpected": 99,
+          "remaining": 90,
+          "resetText": "Resets in 5m",
+          "resetsAt": "2026-11-16T11:39:59Z",
+          "warning": false
+        },
+        {
+          "displaySuffix": "used",
+          "displayValue": 16,
+          "key": "secondary",
+          "label": "7 day",
+          "minutes": 10080,
+          "pace": "30% in reserve | Expected 46% used | Lasts until reset",
+          "paceDelta": -30,
+          "paceExpected": 46,
+          "remaining": 84,
+          "resetText": "Resets in 3d 19h",
+          "resetsAt": "2026-11-20T06:59:59Z",
+          "warning": false
+        },
+        {
+          "displaySuffix": "used",
+          "displayValue": 7,
+          "key": "extra:000000000000000000000000000000000000000000000000000000005ca1ab1e",
+          "label": "Fable only",
+          "minutes": 10080,
+          "pace": "",
+          "paceDelta": null,
+          "paceExpected": null,
+          "remaining": 93,
+          "resetText": "Resets in 3d 19h",
+          "resetsAt": "2026-11-20T06:59:59Z",
+          "scoped": true,
+          "warning": false
+        }
+      ]
+    },
+    {
+      "credits": 0,
+      "error": "",
+      "extraUsage": {
+        "balance": null,
+        "currency": "Credits",
+        "limit": 0,
+        "period": "Extra usage",
+        "used": 0
+      },
+      "plan": "plus",
+      "provider": "codex",
+      "resetCredits": {
+        "available": 3,
+        "nextExpiresAt": "2026-11-30T20:31:03Z"
+      },
+      "status": "All Systems Operational",
+      "statusLevel": "none",
+      "updatedAt": "2026-11-16T11:35:30Z",
+      "windows": [
+        {
+          "displaySuffix": "used",
+          "displayValue": 0,
+          "key": "primary",
+          "label": "5 hour",
+          "minutes": 300,
+          "pace": "",
+          "paceDelta": null,
+          "paceExpected": null,
+          "remaining": 100,
+          "resetText": "Resets in 5h 0m",
+          "resetsAt": "2026-11-16T16:35:30Z",
+          "warning": false
+        },
+        {
+          "displaySuffix": "used",
+          "displayValue": 0,
+          "key": "secondary",
+          "label": "7 day",
+          "minutes": 10080,
+          "pace": "",
+          "paceDelta": null,
+          "paceExpected": null,
+          "remaining": 100,
+          "resetText": "Resets in 7d 0h",
+          "resetsAt": "2026-11-23T11:35:30Z",
+          "warning": false
+        }
+      ]
+    }
+  ],
+  "error": "",
+  "pid": 4242,
+  "quotaDisplay": "used",
+  "schemaVersion": 1,
+  "spending": [
+    {
+      "error": "",
+      "month": 0,
+      "provenance": "unknown",
+      "provider": "codex",
+      "today": 0,
+      "tokens": 0
+    },
+    {
+      "error": "",
+      "month": 42.5,
+      "provenance": "listPriceEstimate",
+      "provider": "claude",
+      "today": 3.25,
+      "tokens": 1234567
+    }
+  ],
+  "stale": false,
+  "summary": "CL 10%  ·  CX 0%",
+  "updated": "12:35"
+}
