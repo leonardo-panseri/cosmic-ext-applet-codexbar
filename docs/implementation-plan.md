@@ -588,14 +588,20 @@ install, the panel and the P2–P4 checks in the sandbox are still to do. Decisi
   `flatpak/flatpak-github-actions/flatpak-builder@v6` in the `freedesktop-25.08` image, which installs the rust
   extension and the BaseApp from Flathub and uploads the bundle. Neither job has run on GitHub yet.
 
-Left for the user:
+**Checked in the real panel 2026-11-16**, with the Flatpak from `just flatpak-install` in the top panel and
+`codexbar-linux` 0.84.0:
 
-- `just flatpak-install`, then add **CodexBar** in Settings → Desktop → Panel → Configure panel applets.
-  Then rerun the P2, P3 and P4 checks with the panel's
-  sandboxed applet.
-- Capture `resources/screenshots/popup.png` as its README describes.
-- Add a `LICENSE` file with the MPL-2.0 text before P6: `Cargo.toml` and the metainfo declare it, but the
-  repository has none.
+- **P2:** the logos take the panel's text colour, and `·` separators show with no clipping. After
+  `codexbar-linux --quit` the warning badge appeared within 3 s. After `codexbar-linux --background` the panel
+  recovered on its own within a few seconds. Left click and middle click work. Not yet checked: a vertical
+  panel, and moving into the overflow popup when the panel is full.
+- **P3:** the cards, spending, **Refresh**, `R`, `Esc`, **Usage & Spend…** and **Settings…** work.
+- **P4:** the guidance, **Open installation guide**, **Check again**, the autostart banner and the tray prompt
+  work. **Hide tray icon** removed the desktop app's icon from the status area.
+- **Resources:** 27 MB RSS, 23 MB PSS, and no measurable CPU over 1.5 minutes idle.
+
+The `LICENSE` file has since been added (`c848508`). Still left for the user: capture
+`resources/screenshots/popup.png` as its README describes.
 
 ### P6 — Publish
 
