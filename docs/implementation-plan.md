@@ -315,9 +315,8 @@ Omarchy.)
    control for `panel_style` (Bars, Percent, Both), a toggle per entry for `hidden_providers`, and, when the desktop
    app left entries out of `barEntries`, a note that its "Providers in the bar" setting decides how many it formats.
 
-**Legibility:** with frosted applets on, COSMIC's popup background can be clear enough that windows behind
-compete with text outside the cards. Every popup gets a layer of the theme's background under its content that
-brings it to at least 85% opacity; opaque themes are unchanged.
+**Frosted glass:** the popup takes the theme's background as it is, like the native applets' popups. It used to
+get an extra layer bringing it to 85% opacity, which only made up for the popup not being blurred (fixed in 0.1.1).
 
 **Keyboard:** `R` refreshes, `Esc` closes, and the left and right arrows switch tabs.
 

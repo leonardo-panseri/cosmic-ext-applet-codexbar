@@ -40,9 +40,6 @@ const PACE_TICK: f32 = 4.0;
 /// alike, so the sides get [`TOOLTIP_SIDES`] more.
 const TOOLTIP_PADDING: f32 = 8.0;
 const TOOLTIP_SIDES: u16 = 6;
-/// The least opacity of the popup's background. With frosted applets on, COSMIC's own can be
-/// so clear that windows behind compete with the text that isn't on a card.
-const BACKDROP_ALPHA: f32 = 0.85;
 const UNDERLINE: f32 = 2.0;
 
 /// What the popup's panel page shows and edits.
@@ -514,36 +511,6 @@ fn tip<'a>(
         .padding(TOOLTIP_PADDING)
         .gap(4)
         .into()
-}
-
-/// Any popup's content over a layer of the theme's background that brings it up to
-/// [`BACKDROP_ALPHA`], so frosted popups stay frosted but legible. Opaque themes are unchanged.
-pub fn backdrop<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    widget::container(content)
-        .class(cosmic::theme::Container::custom(|theme| {
-            let cosmic = theme.cosmic();
-            let base = cosmic.background(theme.transparent).base;
-            let mut layer: Color = base.into();
-            layer.a = layer_alpha(base.alpha, BACKDROP_ALPHA);
-            widget::container::Style {
-                background: (layer.a > 0.0).then(|| layer.into()),
-                border: Border {
-                    radius: cosmic.corner_radii.radius_m.into(),
-                    ..Border::default()
-                },
-                ..widget::container::Style::default()
-            }
-        }))
-        .into()
-}
-
-/// The alpha of a layer that, drawn over a background of alpha `below`, makes it `target`.
-pub fn layer_alpha(below: f32, target: f32) -> f32 {
-    if below >= target {
-        0.0
-    } else {
-        (target - below) / (1.0 - below)
-    }
 }
 
 /// A small round dot in the colour of a severity.
@@ -1179,17 +1146,6 @@ mod tests {
         assert_eq!(style_of(&model, model.active()), Some(PanelStyle::Percent));
         select_style(&mut model, PanelStyle::Bars);
         assert_eq!(style_of(&model, model.active()), Some(PanelStyle::Bars));
-    }
-
-    #[test]
-    fn the_backdrop_only_tops_up_clear_backgrounds() {
-        let over = |below: f32, layer: f32| below + layer * (1.0 - below);
-        for below in [0.0, 0.3, 0.6] {
-            let layer = layer_alpha(below, 0.85);
-            assert!((over(below, layer) - 0.85).abs() < 1e-6, "{below}");
-        }
-        assert!(layer_alpha(0.9, 0.85).abs() < f32::EPSILON);
-        assert!(layer_alpha(1.0, 0.85).abs() < f32::EPSILON);
     }
 
     #[test]

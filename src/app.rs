@@ -391,10 +391,7 @@ impl cosmic::Application for AppModel {
             State::Unavailable(why) => guidance::unavailable(*why),
             State::Incompatible => guidance::incompatible(),
         };
-        self.core
-            .applet
-            .popup_container(popup::backdrop(content))
-            .into()
+        self.core.applet.popup_container(content).into()
     }
 
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
