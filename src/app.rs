@@ -7,10 +7,11 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
+use cosmic::iced::platform_specific::shell::wayland::commands::popup::destroy_popup;
 use cosmic::iced::widget::{stack, svg};
 use cosmic::iced::{Alignment, Border, Color, Length, Limits, Subscription, keyboard, window::Id};
 use cosmic::prelude::*;
+use cosmic::surface::action::LiveSettings;
 use cosmic::widget::{self, icon, segmented_button};
 
 use crate::backend::{self, Backend, BackendError};
@@ -463,29 +464,7 @@ impl cosmic::Application for AppModel {
                 return if self.popup.is_some() {
                     self.close_popup()
                 } else {
-                    let new_id = Id::unique();
-                    self.popup.replace(new_id);
-                    self.panel_page = false;
-                    let mut popup_settings = self.core.applet.get_popup_settings(
-                        self.core.main_window_id().unwrap(),
-                        new_id,
-                        None,
-                        None,
-                        None,
-                    );
-                    popup_settings.positioner.size_limits = Limits::NONE
-                        .max_width(372.0)
-                        .min_width(300.0)
-                        .min_height(100.0)
-                        .max_height(1080.0);
-                    let snapshot = if self.connection.popup_opened() {
-                        self.poll()
-                    } else {
-                        Task::none()
-                    };
-                    self.autostart.popup_opened();
-                    self.tray.popup_opened();
-                    Task::batch([get_popup(popup_settings), snapshot, self.check_autostart()])
+                    self.open_popup()
                 };
             }
             Message::PopupClosed(id) => {
@@ -610,6 +589,41 @@ impl AppModel {
         if let Err(why) = self.config.set_panel_style(handler, style) {
             eprintln!("can't store the panel style: {why}");
         }
+    }
+
+    fn open_popup(&mut self) -> Task<cosmic::Action<Message>> {
+        let new_id = Id::unique();
+        self.popup.replace(new_id);
+        self.panel_page = false;
+        let mut popup_settings = self.core.applet.get_popup_settings(
+            self.core.main_window_id().unwrap(),
+            new_id,
+            None,
+            None,
+            None,
+        );
+        popup_settings.positioner.size_limits = Limits::NONE
+            .max_width(372.0)
+            .min_width(300.0)
+            .min_height(100.0)
+            .max_height(1080.0);
+        let snapshot = if self.connection.popup_opened() {
+            self.poll()
+        } else {
+            Task::none()
+        };
+        self.autostart.popup_opened();
+        self.tray.popup_opened();
+        // Through libcosmic's surface action, not iced's `get_popup`: libcosmic then knows
+        // the surface is a popup and asks the compositor to blur it under frosted glass.
+        // A popup it doesn't know gets the translucent background without the blur.
+        // With no view of its own here, it still shows `view_window`.
+        let open = cosmic::surface::surface_task(cosmic::surface::action::app_popup(
+            |_: &Self| LiveSettings::default(),
+            move |_: &mut Self| popup_settings.clone(),
+            None,
+        ));
+        Task::batch([open, snapshot, self.check_autostart()])
     }
 
     fn close_popup(&mut self) -> Task<cosmic::Action<Message>> {
