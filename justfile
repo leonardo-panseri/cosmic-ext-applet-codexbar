@@ -112,10 +112,12 @@ flatpak-build *args:
         {{args}} \
         {{flatpak-build-dir / 'app'}} {{flatpak-manifest}}
 
-# Installs the Flatpak built by `just flatpak-build` for the current user
-flatpak-install:
+# Builds the Flatpak from the working tree, then installs or updates it for the current user.
+# --or-update deploys next to the running applet; --reinstall uninstalls first, and the panel
+# respawning the applet in between can fail it with "Directory not empty".
+flatpak-install: flatpak-build
     flatpak remote-add --user --if-not-exists --no-gpg-verify {{flatpak-remote}} {{flatpak-repo}}
-    flatpak install --user --reinstall --noninteractive {{flatpak-remote}} {{appid}}
+    flatpak install --user --or-update --noninteractive {{flatpak-remote}} {{appid}}
 
 # Regenerates flatpak/cargo-sources.json from Cargo.lock; run after changing dependencies
 flatpak-sources:

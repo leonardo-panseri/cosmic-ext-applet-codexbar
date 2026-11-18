@@ -600,8 +600,9 @@ install, the panel and the P2–P4 checks in the sandbox are still to do. Decisi
   the sandbox's `XDG_DATA_HOME` hides runtimes installed with `--user` ("Unable to find sdk"). The recipe unsets it
   before calling `flatpak-builder`. State and output live in `.flatpak-builder/` and `build-flatpak/` (ignored).
   The recipe doesn't pass `--install-deps-from`; the README lists the `flatpak install` command instead.
-- **`flatpak-install`** adds `build-flatpak/repo` as the `codexbar-applet-local` user remote, without GPG, and
-  installs from it.
+- **`flatpak-install`** runs `flatpak-build` first, adds `build-flatpak/repo` as the `codexbar-applet-local` user
+  remote, without GPG, and installs from it with `--or-update`. It used `--reinstall`, which uninstalls first; the
+  panel respawning the applet in between could fail it with "Directory not empty" and leave it uninstalled.
 - **`flatpak-sources`** downloads `flatpak-cargo-generator.py` at a pinned flatpak-builder-tools commit into a venv
   under `build-flatpak/tools` (or `$FLATPAK_TOOLS_DIR`) and regenerates `cargo-sources.json` from `Cargo.lock`.
 - **Metainfo:** a three-paragraph description (what it shows, the CodexBar for Linux requirement, MIT logos), a

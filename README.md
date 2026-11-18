@@ -35,9 +35,12 @@ flatpak install --user flathub org.flatpak.Builder \
 Then, from this repository:
 
 ```sh
-just flatpak-build     # builds into build-flatpak/repo (offline, from flatpak/cargo-sources.json)
-just flatpak-install   # adds build-flatpak/repo as the `codexbar-applet-local` remote and installs from it
+just flatpak-install
 ```
+
+It builds the Flatpak into `build-flatpak/repo` (offline, from `flatpak/cargo-sources.json`), adds that as the
+`codexbar-applet-local` remote, and installs the applet from it, or updates it in place if it's installed.
+`just flatpak-build` only builds.
 
 Open **Settings → Desktop → Panel → Configure panel applets**, press **Add applet** and choose **CodexBar**.
 
