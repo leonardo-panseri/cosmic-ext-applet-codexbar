@@ -668,6 +668,8 @@ README should say that CodexBar for Linux is required.
 **Submitted 2026-11-17** as pop-os/cosmic-flatpak#408, from `add-codexbar-applet` on the
 leonardo-panseri/cosmic-flatpak fork. Before any review, 0.1.1 (2026-11-18) fixed the popup not being blurred
 under frosted glass, and the PR's single commit was amended to pin 0.1.1 instead of 0.1.0.
+Then 0.1.2 (2026-11-18), after checking the applet against pop-os/cosmic-applets: the popup lost its opacity
+layer, takes its colours from the translucent layer, and has native margins. The PR was amended again to pin it.
 
 ### P7 — Maintenance (optional)
 

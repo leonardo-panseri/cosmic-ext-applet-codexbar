@@ -61,6 +61,14 @@
   </keywords>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.1.2" date="2026-11-18">
+      <description>
+        <p>
+          The popup follows COSMIC's frosted glass and margins like the native applets: no extra opacity
+          layer, colours from the translucent layer, and content inset as in COSMIC's own popups.
+        </p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-11-18">
       <description>
         <p>The popup is now blurred under COSMIC's frosted glass, like native applets' popups.</p>
