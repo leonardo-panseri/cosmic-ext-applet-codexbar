@@ -451,7 +451,8 @@ fn bar(window: &Window) -> Element<'_, Message> {
                 .width(Length::Fixed(PACE_TICK))
                 .height(Length::Fill)
                 .class(cosmic::theme::Container::custom(|theme| {
-                    let mut color: Color = theme.cosmic().on_bg_color().into();
+                    // The popup's own layer: translucent under frosted glass, as libcosmic's widgets pick.
+                    let mut color: Color = theme.cosmic().background(theme.transparent).on.into();
                     color.a = 0.7;
                     widget::container::Style {
                         background: Some(color.into()),
@@ -523,7 +524,7 @@ fn dot<'a>(severity: Severity) -> Element<'a, Message> {
             let color = match severity {
                 Severity::Minor => cosmic.warning_color(),
                 Severity::Major => cosmic.destructive_color(),
-                Severity::Other => cosmic.on_bg_color(),
+                Severity::Other => cosmic.background(theme.transparent).on,
             };
             widget::container::Style {
                 background: Some(Color::from(color).into()),

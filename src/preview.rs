@@ -194,11 +194,11 @@ impl cosmic::Application for Preview {
         .padding([2, 40, 2, 0])
         .width(Length::Fill)
         .class(cosmic::theme::Container::custom(|theme| {
-            let cosmic = theme.cosmic();
+            let background = theme.cosmic().background(theme.transparent);
             widget::container::Style {
-                text_color: Some(cosmic.background(false).on.into()),
-                icon_color: Some(cosmic.background(false).on.into()),
-                background: Some(Color::from(cosmic.background(false).base).into()),
+                text_color: Some(background.on.into()),
+                icon_color: Some(background.on.into()),
+                background: Some(Color::from(background.base).into()),
                 ..widget::container::Style::default()
             }
         }));

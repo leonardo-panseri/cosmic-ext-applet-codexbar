@@ -784,7 +784,8 @@ fn meter<'a>(meter: Meter, width: f32, girth: f32) -> Element<'a, Message> {
         .width(Length::Fixed(width))
         .height(Length::Fixed(girth))
         .class(cosmic::theme::Container::custom(move |theme| {
-            let mut track: Color = theme.cosmic().on_bg_color().into();
+            // The panel's own layer: translucent under frosted glass, as libcosmic's widgets pick.
+            let mut track: Color = theme.cosmic().background(theme.transparent).on.into();
             track.a = 0.25;
             widget::container::Style {
                 background: Some(track.into()),
