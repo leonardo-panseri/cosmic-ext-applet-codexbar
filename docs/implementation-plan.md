@@ -339,6 +339,13 @@ isn't responding" and the text suggests restarting it.
 Links open through `xdg-open`. Inside the Flatpak runtime, that is flatpak-xdg-utils, which goes through
 the OpenURI portal, so no extra permission is needed.
 
+**No activation token yet** (checked 2026-11-18). COSMIC's applets ask the compositor for an xdg-activation token
+before launching anything, so what they open comes up focused. Here nothing would carry it: flatpak-xdg-utils'
+`xdg-open` (1.0.6 in the 25.08 runtime, and upstream `main`) sends the portal only its `ask` option and never
+reads `XDG_ACTIVATION_TOKEN`, and the desktop app's `usage` and `settings` commands have no token field. The way
+to do it for links is to call `org.freedesktop.portal.OpenURI.OpenURI` directly with the `activation_token`
+option, using a token from libcosmic's `activation_token_subscription` (the `applet-token` feature is on already).
+
 ### 4.5 Autostart banner
 
 The banner reads: "Start at login is off. CodexBar won't be running after you next log in, and this
