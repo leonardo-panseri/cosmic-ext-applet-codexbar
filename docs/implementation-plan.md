@@ -658,6 +658,10 @@ README should say that CodexBar for Linux is required.
   manifest, the PR has no LLM-generated content, descriptions included. The description is the maintainer's to
   write.
 
+**Submitted 2026-11-17** as pop-os/cosmic-flatpak#408, from `add-codexbar-applet` on the
+leonardo-panseri/cosmic-flatpak fork. Before any review, 0.1.1 (2026-11-18) fixed the popup not being blurred
+under frosted glass, and the PR's single commit was amended to pin 0.1.1 instead of 0.1.0.
+
 ### P7 — Maintenance (optional)
 
 A scheduled workflow that alerts when any of these change upstream:

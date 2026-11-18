@@ -61,6 +61,11 @@
   </keywords>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.1.1" date="2026-11-18">
+      <description>
+        <p>The popup is now blurred under COSMIC's frosted glass, like native applets' popups.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-16">
       <description>
         <p>
