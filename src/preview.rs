@@ -27,7 +27,7 @@ use crate::popup;
 use crate::snapshot::{self, Snapshot};
 
 /// As wide as the panel's popup.
-const WIDTH: f32 = 360.0;
+const WIDTH: f32 = 376.0;
 /// The screenshot's size in logical pixels. Wide enough for app stores, which want 620 px. The
 /// saved pixels follow the display's scale; libcosmic's own scale factor doesn't change them.
 const SHOT: Size = Size::new(640.0, 700.0);

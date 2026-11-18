@@ -600,8 +600,8 @@ impl AppModel {
             None,
         );
         popup_settings.positioner.size_limits = Limits::NONE
-            .max_width(372.0)
-            .min_width(300.0)
+            .max_width(388.0)
+            .min_width(316.0)
             .min_height(100.0)
             .max_height(1080.0);
         let snapshot = if self.connection.popup_opened() {

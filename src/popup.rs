@@ -26,8 +26,12 @@ use crate::{fl, icons};
 
 /// The page scrolls beyond this, so the popup stays on screen with many windows.
 const PAGE_MAX_HEIGHT: f32 = 560.0;
-/// The popup's side margin.
-const MARGIN: u16 = 16;
+/// The popup's side margin: COSMIC's `space_m`, as its applets inset their popups' content
+/// (libcosmic's `menu_control_padding`).
+const MARGIN: u16 = 24;
+/// How far a divider stops from the popup's edges: COSMIC's `space_s`, so dividers reach past
+/// the content either side, as in COSMIC's applets.
+const DIVIDER_MARGIN: u16 = 16;
 const TAB_WIDTH: f32 = 52.0;
 /// Tabs that fit across the popup at [`TAB_WIDTH`]; more scroll sideways.
 const TABS_THAT_FIT: usize = 6;
@@ -71,7 +75,9 @@ pub fn view<'a>(
 
     let mut popup = widget::Column::new()
         .spacing(12)
-        .padding([12, 0, 16, 0])
+        // 8 above the header's buttons, which bring their own 8, as COSMIC's applets pad their
+        // popups; 16 under the page, which ends on a card.
+        .padding([8, 0, 16, 0])
         .push(header(snapshot, panel.open));
     if !banners.is_empty() {
         popup = popup.push(
@@ -170,7 +176,9 @@ fn tabs<'a>(snapshot: &'a Snapshot, selected: Option<&'a Entry>) -> Element<'a, 
     };
     widget::Column::new()
         .push(widget::container(strip).padding([0, MARGIN]))
-        .push(widget::container(widget::divider::horizontal::default()).padding([0, MARGIN]))
+        .push(
+            widget::container(widget::divider::horizontal::default()).padding([0, DIVIDER_MARGIN]),
+        )
         .into()
 }
 
